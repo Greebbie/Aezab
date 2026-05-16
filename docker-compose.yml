@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   server:
     build: .
@@ -10,8 +8,11 @@ services:
       - HLAB_DATABASE_URL=sqlite+aiosqlite:///./data/hlab.db
       - HLAB_REDIS_URL=redis://redis:6379/0
       - HLAB_LLM_BASE_URL=http://ollama:11434/v1
+      - HLAB_HF_ENDPOINT=${HLAB_HF_ENDPOINT:-https://hf-mirror.com}
+      - HF_ENDPOINT=${HLAB_HF_ENDPOINT:-https://hf-mirror.com}
     volumes:
       - hlab-data:/app/data
+      - hlab-model-cache:/root/.cache/huggingface
     depends_on:
       - redis
     restart: unless-stopped
@@ -22,7 +23,7 @@ services:
       - "6379:6379"
     restart: unless-stopped
 
-  # ── Local LLM via Ollama (CPU) ────────────────────
+  # Local LLM via Ollama (CPU)
   ollama:
     image: ollama/ollama:latest
     ports:
@@ -31,8 +32,8 @@ services:
       - ollama-models:/root/.ollama
     restart: unless-stopped
 
-  # ── Optional: vLLM for GPU inference ──────────────
-  # Uncomment below and comment out ollama if you have NVIDIA GPU
+  # Optional: vLLM for GPU inference
+  # Uncomment below and comment out ollama if you have NVIDIA GPU.
   # vllm:
   #   image: vllm/vllm-openai:latest
   #   ports:
@@ -50,7 +51,7 @@ services:
   #     - vllm-cache:/root/.cache/huggingface
   #   restart: unless-stopped
 
-  # ── Optional: PostgreSQL for production ───────────
+  # Optional: PostgreSQL for production
   # postgres:
   #   image: postgres:16-alpine
   #   environment:
@@ -65,6 +66,7 @@ services:
 
 volumes:
   hlab-data:
+  hlab-model-cache:
   ollama-models:
   # pgdata:
   # vllm-cache:

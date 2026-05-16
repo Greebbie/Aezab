@@ -102,8 +102,13 @@ export default function KnowledgePage() {
         return;
       }
       const formData = new FormData();
-      formData.append('file', values.file[0].originFileObj);
-      formData.append('source_id', values.source_id);
+      const uploadFile = values.file[0].originFileObj;
+      formData.append('file', uploadFile);
+      if (values.source_id) {
+        formData.append('source_id', values.source_id);
+      } else {
+        formData.append('source_name', uploadFile.name.replace(/\.[^.]+$/, ''));
+      }
       formData.append('domain', values.domain || 'default');
       formData.append('chunk_size', String(values.chunk_size || 500));
       formData.append('chunk_overlap', String(values.chunk_overlap || 50));
@@ -234,8 +239,12 @@ export default function KnowledgePage() {
       {/* Upload document */}
       <Modal title="上传文档" open={uploadModal} onOk={handleUpload} onCancel={() => setUploadModal(false)} confirmLoading={uploading}>
         <Form form={uploadForm} layout="vertical">
-          <Form.Item name="source_id" label="知识源" rules={[{ required: true }]}>
-            <Select placeholder="选择目标知识源" options={sourceOptions} />
+          <Form.Item name="source_id" label="知识源">
+            <Select
+              allowClear
+              placeholder="不选则自动按文件名创建"
+              options={sourceOptions}
+            />
           </Form.Item>
           <Form.Item name="file" label="文件" valuePropName="fileList" getValueFromEvent={(e: any) => e?.fileList} rules={[{ required: true }]}>
             <Upload beforeUpload={() => false} maxCount={1} accept=".txt,.md,.pdf,.docx">

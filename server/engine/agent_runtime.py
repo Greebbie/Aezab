@@ -35,7 +35,7 @@ from server.engine.knowledge_retriever import KnowledgeRetriever
 from server.engine.tool_gateway import ToolGateway
 from server.engine.workflow_executor import WorkflowExecutor
 from server.engine.audit_logger import AuditLogger, new_trace_id
-from server.engine.vector_store import get_vector_store
+from server.engine.vector_store import get_vector_store_if_initialized
 from server.runtime_config import runtime_config
 
 logger = logging.getLogger(__name__)
@@ -59,17 +59,28 @@ class SkillToolResult:
     skill_info: dict | None = None
 
 
+@dataclass
+class ActionIntent:
+    """A strong signal that the user is asking the agent to do work."""
+    kind: str | None = None
+    matched: str | None = None
+
+    @property
+    def detected(self) -> bool:
+        return self.kind is not None
+
+
 # ── Prompt templates ─────────────────────────────────────────────
 
 CONVERSATIONAL_SYSTEM_PROMPT = """{persona}
-规则：用户要办事→必须调用工具，禁止纯文字回复；用户问信息→简答1-3句。"""
+规则：用户要办理业务、调用工具、计算、查询外部系统或启动流程时，必须调用可用工具，不要只用文字回答；用户询问信息时，简洁回答 1-3 句。"""
 
 CONVERSATIONAL_SYSTEM_PROMPT_WITH_CONTEXT = """{persona}
 
 参考资料：
 {context}
 
-规则：基于参考资料简答1-3句。资料不足时调用搜索工具。禁止说"没有提供""未找到"。"""
+规则：如果用户只是询问信息，请基于参考资料简洁回答 1-3 句，并保留事实准确性；如果用户要办理业务、调用工具、计算或启动流程，必须调用可用工具，不要被参考资料分散。资料不足时再调用知识搜索工具。禁止说“没有提供”“未找到”。"""
 
 
 # ── Refusal phrases ─────────────────────────────────────────────
@@ -88,6 +99,28 @@ _WORKFLOW_EXIT_KEYWORDS = {
     "取消", "退出", "不办了", "算了", "不要了", "放弃",
     "cancel", "quit", "exit", "abort", "stop",
 }
+
+_WORKFLOW_ACTION_KEYWORDS = [
+    "报修", "维修", "修一下", "修理", "我要办", "帮我办",
+    "我要申请", "我想申请", "提交", "办理", "发起",
+    "做工单", "提工单", "下单", "开工单",
+    "repair", "maintenance", "submit", "apply", "create ticket",
+    "create work order", "open ticket",
+]
+
+_TOOL_ACTION_KEYWORDS = [
+    "计算", "算一下", "帮我算", "乘以", "除以", "加上", "减去",
+    "等于多少", "换算", "转换", "查时间", "当前时间", "现在几点",
+    "calculate", "compute", "multiply", "divide", "plus", "minus",
+    "convert", "current time", "timestamp",
+]
+
+_ARITHMETIC_PATTERNS = [
+    (re.compile(r"(-?\d+(?:\.\d+)?)\s*(?:乘以|乘|x|X|\*)\s*(-?\d+(?:\.\d+)?)"), "multiply"),
+    (re.compile(r"(-?\d+(?:\.\d+)?)\s*(?:除以|除|/)\s*(-?\d+(?:\.\d+)?)"), "divide"),
+    (re.compile(r"(-?\d+(?:\.\d+)?)\s*(?:加上|加|\+)\s*(-?\d+(?:\.\d+)?)"), "add"),
+    (re.compile(r"(-?\d+(?:\.\d+)?)\s*(?:减去|减|-)\s*(-?\d+(?:\.\d+)?)"), "subtract"),
+]
 
 # ── Greeting / chitchat fast-path detection ───────────────
 
@@ -113,6 +146,8 @@ def _is_chitchat(message: str) -> bool:
     msg = message.strip().lower()
     # Strip trailing punctuation for matching
     cleaned = msg.rstrip("?？!！。.~，, ")
+    if any(kw in cleaned for kw in _WORKFLOW_ACTION_KEYWORDS + _TOOL_ACTION_KEYWORDS):
+        return False
     if len(cleaned) <= 2:
         return True
     # Exact matches (e.g. "你是谁")
@@ -168,6 +203,22 @@ def _rewrite_query_with_history(message: str, history_messages: list) -> str:
 
 
 # ═════════════════════════════════════════════════════════════════
+
+def _build_retrieval_fallback_answer(context: str, citations: list[Citation], limit: int = 2) -> str:
+    """Build a concise customer-service answer from retrieved snippets."""
+    parts: list[str] = []
+    for idx, citation in enumerate(citations[:limit], start=1):
+        snippet = (citation.content_snippet or "").strip()
+        if not snippet:
+            continue
+        source = (citation.source_name or "knowledge base").strip()
+        parts.append(f"[{idx}] {snippet} [source: {source}]")
+
+    if parts:
+        return "\n".join(parts)
+
+    return (context or "").strip()[:500]
+
 
 class AgentRuntime:
     """Main orchestrator for handling user requests.
@@ -250,20 +301,24 @@ class AgentRuntime:
         # ── Load all skills ONCE for this request (avoid 3x DB queries) ──
         all_skills = await self._load_agent_skills(agent.id)
 
-        # ── Check if user intends a workflow action ──
-        has_action_intent = False
+        # ── Check if user intends an action (workflow/tool) ──
+        action_intent = ActionIntent()
         if not is_chitchat:
-            has_action_intent = self._has_workflow_intent_from_skills(all_skills, msg_lower)
-            if has_action_intent:
+            action_intent = self._detect_action_intent_from_skills(
+                all_skills, msg_lower, req.intent,
+            )
+            if action_intent.detected:
                 audit.log("action_intent_detected", event_data={
                     "message": req.message,
+                    "intent_type": action_intent.kind,
+                    "matched": action_intent.matched,
                     "skip_pre_retrieval": True,
                 })
 
         # ── Pre-retrieval for knowledge skills ──
         pre_context = ""
         pre_citations: list[Citation] = []
-        if not has_action_intent and not is_chitchat:
+        if not action_intent.detected and not is_chitchat:
             knowledge_skills = [s for s in all_skills if s.skill_type == "knowledge_qa"]
             if knowledge_skills:
                 # Use rewritten query for better retrieval
@@ -318,8 +373,11 @@ class AgentRuntime:
         # When action intent is detected, add an instruction hint so the LLM
         # calls the tool instead of answering with text
         user_content = req.message
-        if has_action_intent:
-            user_content = f"{req.message}\n[系统：请调用工具处理，不要用文字回答]"
+        if action_intent.detected:
+            user_content = (
+                f"{req.message}\n"
+                f"[系统：检测到{action_intent.kind or 'action'}请求，请调用最匹配的工具处理，不要用文字直接代办。]"
+            )
         messages.append(LLMMessage(role="user", content=user_content))
 
         if req.expand:
@@ -333,6 +391,7 @@ class AgentRuntime:
         collected_workflow_status: str | None = None
         collected_skill_info: list[dict] = []
         tool_calls_log: list[dict] = []
+        fallback_info: dict | None = None
         final_content = ""
         llm_resp = None
 
@@ -348,9 +407,36 @@ class AgentRuntime:
                 audit.log("error", event_data={
                     "error": str(e), "round": round_idx, "stage": "llm_call",
                 })
+                if action_intent.detected:
+                    fallback = await self._execute_action_fallback(
+                        action_intent, req.message, handler_map, tool_defs, audit,
+                    )
+                    if fallback:
+                        fn_name, arguments, result = fallback
+                        if result.citations:
+                            collected_citations.extend(result.citations)
+                        if result.workflow_card:
+                            collected_workflow_card = result.workflow_card
+                            collected_workflow_status = result.workflow_status
+                        if result.skill_info:
+                            collected_skill_info.append(result.skill_info)
+                        tool_calls_log.append({
+                            "function": fn_name,
+                            "arguments": arguments,
+                            "fallback": True,
+                            "fallback_reason": "llm_call_failed",
+                        })
+                        final_content = result.text
+                        break
                 if pre_citations:
                     # Have retrieval data — use it as fallback
-                    final_content = pre_context[:500] if pre_context else ""
+                    final_content = _build_retrieval_fallback_answer(pre_context, pre_citations)
+                    fallback_info = {
+                        "type": "retrieval",
+                        "reason": "llm_call_failed",
+                        "citations_count": len(pre_citations),
+                    }
+                    audit.log("retrieval_fallback", event_data=fallback_info)
                     break
                 await audit.flush()
                 return self._fallback_response(session.id, trace_id, str(e))
@@ -364,6 +450,27 @@ class AgentRuntime:
 
             # No tool calls → final answer
             if not llm_resp.tool_calls:
+                if action_intent.detected:
+                    fallback = await self._execute_action_fallback(
+                        action_intent, req.message, handler_map, tool_defs, audit,
+                    )
+                    if fallback:
+                        fn_name, arguments, result = fallback
+                        if result.citations:
+                            collected_citations.extend(result.citations)
+                        if result.workflow_card:
+                            collected_workflow_card = result.workflow_card
+                            collected_workflow_status = result.workflow_status
+                        if result.skill_info:
+                            collected_skill_info.append(result.skill_info)
+                        tool_calls_log.append({
+                            "function": fn_name,
+                            "arguments": arguments,
+                            "fallback": True,
+                            "fallback_reason": "llm_no_tool_call",
+                        })
+                        final_content = result.text
+                        break
                 final_content = llm_resp.content
                 break
 
@@ -428,7 +535,14 @@ class AgentRuntime:
 
         # Fallback if empty
         if not short_answer:
-            if pre_context:
+            if pre_citations:
+                short_answer = _build_retrieval_fallback_answer(pre_context, pre_citations)
+                fallback_info = {
+                    "type": "retrieval",
+                    "reason": "empty_llm_response",
+                    "citations_count": len(pre_citations),
+                }
+            elif pre_context:
                 short_answer = pre_context[:500]
             elif tool_calls_log:
                 short_answer = "操作已完成。"
@@ -462,8 +576,15 @@ class AgentRuntime:
             "mode": "conversational",
             "tool_calls_count": len(tool_calls_log),
             "citations_count": len(collected_citations),
+            "fallback": fallback_info,
         })
         await audit.flush()
+
+        metadata = {"mode": "conversational"}
+        if tool_calls_log:
+            metadata["tool_calls"] = tool_calls_log
+        if fallback_info:
+            metadata["fallback"] = fallback_info
 
         return InvokeResponse(
             session_id=session.id,
@@ -474,10 +595,7 @@ class AgentRuntime:
             workflow_card=collected_workflow_card,
             workflow_status=collected_workflow_status,
             skill_info=collected_skill_info[0] if collected_skill_info else None,
-            metadata={
-                "mode": "conversational",
-                "tool_calls": tool_calls_log,
-            } if tool_calls_log else None,
+            metadata=metadata if len(metadata) > 1 else None,
         )
 
     # ── Build skill tools ────────────────────────────────────
@@ -712,7 +830,7 @@ class AgentRuntime:
         result = await self.db.execute(
             select(Skill).where(
                 Skill.id.in_(sub_skill_ids),
-                Skill.enabled == True,
+                Skill.enabled.is_(True),
             )
         )
         sub_skills = list(result.scalars().all())
@@ -746,7 +864,7 @@ class AgentRuntime:
         async def handler(args: dict) -> SkillToolResult:
             query = args.get("query", "")
             retriever = KnowledgeRetriever(
-                self.db, vector_store=get_vector_store(),
+                self.db, vector_store=get_vector_store_if_initialized(),
                 runtime_cfg=runtime_config.all(),
             )
             try:
@@ -902,6 +1020,95 @@ class AgentRuntime:
 
     # ── Pre-retrieval ────────────────────────────────────────
 
+    async def _execute_action_fallback(
+        self,
+        action_intent: ActionIntent,
+        message: str,
+        handler_map: dict[str, Callable],
+        tool_defs: list[dict],
+        audit: AuditLogger,
+    ) -> tuple[str, dict, SkillToolResult] | None:
+        """Execute a clear action when the LLM cannot or will not call tools.
+
+        This is a guardrail, not the primary router. It only runs after an LLM
+        failure/no-tool response and only for obvious workflow/tool requests.
+        """
+        if not handler_map:
+            return None
+
+        if action_intent.kind == "workflow":
+            for fn_name, handler in handler_map.items():
+                if fn_name.startswith("start_workflow_"):
+                    args = {"reason": message}
+                    result = await handler(args)
+                    audit.log("action_fallback", event_data={
+                        "intent_type": "workflow",
+                        "function_name": fn_name,
+                        "reason": "llm_unavailable_or_no_tool_call",
+                    })
+                    return fn_name, args, result
+            return None
+
+        if action_intent.kind != "tool":
+            return None
+
+        msg_lower = message.lower()
+        tool_names = [
+            tool_def.get("function", {}).get("name", "")
+            for tool_def in tool_defs
+        ]
+
+        if any(kw in msg_lower for kw in ["计算", "算", "乘", "除", "加", "减", "calculate", "compute"]):
+            calculator_name = next((name for name in tool_names if "calculator" in name.lower()), "")
+            if calculator_name and calculator_name in handler_map:
+                args = self._extract_calculator_args(message)
+                if args:
+                    result = await handler_map[calculator_name](args)
+                    audit.log("action_fallback", event_data={
+                        "intent_type": "tool",
+                        "function_name": calculator_name,
+                        "reason": "llm_unavailable_or_no_tool_call",
+                    })
+                    return calculator_name, args, result
+
+        if any(kw in msg_lower for kw in ["时间", "日期", "几点", "time", "date", "timestamp"]):
+            timestamp_name = next((name for name in tool_names if "timestamp" in name.lower()), "")
+            if timestamp_name and timestamp_name in handler_map:
+                args = {"format": "iso"}
+                result = await handler_map[timestamp_name](args)
+                audit.log("action_fallback", event_data={
+                    "intent_type": "tool",
+                    "function_name": timestamp_name,
+                    "reason": "llm_unavailable_or_no_tool_call",
+                })
+                return timestamp_name, args, result
+
+        return None
+
+    @staticmethod
+    def _extract_calculator_args(message: str) -> dict | None:
+        """Extract simple arithmetic args for calculator fallback."""
+        normalized = message.replace("，", " ").replace("。", " ")
+        for pattern, operation in _ARITHMETIC_PATTERNS:
+            match = pattern.search(normalized)
+            if not match:
+                continue
+            a = float(match.group(1))
+            b = float(match.group(2))
+            return {
+                "operation": operation,
+                "a": int(a) if a.is_integer() else a,
+                "b": int(b) if b.is_integer() else b,
+            }
+
+        expression_match = re.search(r"[-+*/().\d\s]{3,}", normalized)
+        if expression_match:
+            expression = expression_match.group(0).strip()
+            if expression:
+                return {"expression": expression}
+
+        return None
+
     async def _get_knowledge_skills(self, agent_id: str) -> list[Skill]:
         """Get knowledge_qa skills bound to an agent."""
         skills = await self._load_agent_skills(agent_id)
@@ -909,12 +1116,7 @@ class AgentRuntime:
 
     def _has_workflow_intent_from_skills(self, skills: list, msg_lower: str) -> bool:
         """Check workflow intent using pre-loaded skills (no DB call)."""
-        _ACTION_KEYWORDS = [
-            "报修", "维修", "修一下", "修理", "我要办", "帮我办",
-            "我要申请", "我想申请", "提交", "办理", "发起",
-            "做工单", "提工单", "下单", "开工单",
-        ]
-        for kw in _ACTION_KEYWORDS:
+        for kw in _WORKFLOW_ACTION_KEYWORDS:
             if kw in msg_lower:
                 return True
         for skill in skills:
@@ -926,6 +1128,51 @@ class AgentRuntime:
                     return True
         return False
 
+    def _detect_action_intent_from_skills(
+        self,
+        skills: list,
+        msg_lower: str,
+        explicit_intent: str | None = None,
+    ) -> ActionIntent:
+        """Detect strong action intent without replacing LLM function calling.
+
+        This only decides whether to skip knowledge pre-retrieval and strengthen
+        the tool-use instruction. The LLM still selects and calls the function.
+        """
+        intent = (explicit_intent or "").strip().lower()
+        if intent in {"workflow", "tool", "tool_call", "delegate"}:
+            return ActionIntent(kind="tool" if intent == "tool_call" else intent, matched="explicit_intent")
+
+        if self._has_workflow_intent_from_skills(skills, msg_lower):
+            return ActionIntent(kind="workflow", matched="keyword")
+
+        for skill in skills:
+            if skill.skill_type != "tool_call":
+                continue
+
+            trigger_cfg = skill.trigger_config or {}
+            trigger_keywords = trigger_cfg.get("keywords", []) or []
+            for kw in trigger_keywords:
+                if str(kw).lower() in msg_lower:
+                    return ActionIntent(kind="tool", matched=str(kw))
+
+            skill_text = " ".join(
+                str(value)
+                for value in [
+                    skill.name,
+                    skill.description or "",
+                    trigger_cfg.get("trigger_description", ""),
+                ]
+                if value
+            ).lower()
+
+            if any(kw in msg_lower for kw in _TOOL_ACTION_KEYWORDS):
+                return ActionIntent(kind="tool", matched="generic_tool_keyword")
+            if skill_text and any(kw in msg_lower for kw in skill_text.split()):
+                return ActionIntent(kind="tool", matched="skill_description")
+
+        return ActionIntent()
+
     async def _has_workflow_intent(self, agent_id: str, msg_lower: str) -> bool:
         """Check if user message matches workflow skill trigger keywords.
 
@@ -934,12 +1181,7 @@ class AgentRuntime:
         and is more likely to call the workflow tool.
         """
         # Generic action keywords that always indicate workflow intent
-        _ACTION_KEYWORDS = [
-            "报修", "维修", "修一下", "修理", "我要办", "帮我办",
-            "我要申请", "我想申请", "提交", "办理", "发起",
-            "做工单", "提工单", "下单", "开工单",
-        ]
-        for kw in _ACTION_KEYWORDS:
+        for kw in _WORKFLOW_ACTION_KEYWORDS:
             if kw in msg_lower:
                 return True
 
@@ -967,7 +1209,7 @@ class AgentRuntime:
             domain = config.get("domain")
 
             retriever = KnowledgeRetriever(
-                self.db, vector_store=get_vector_store(),
+                self.db, vector_store=get_vector_store_if_initialized(),
                 runtime_cfg=runtime_config.all(),
             )
 
@@ -1087,7 +1329,7 @@ class AgentRuntime:
         result = await self.db.execute(
             select(AgentSkill).where(
                 AgentSkill.agent_id == agent_id,
-                AgentSkill.enabled == True,
+                AgentSkill.enabled.is_(True),
             )
         )
         bindings = result.scalars().all()
@@ -1098,7 +1340,7 @@ class AgentRuntime:
         result = await self.db.execute(
             select(Skill).where(
                 Skill.id.in_(skill_ids),
-                Skill.enabled == True,
+                Skill.enabled.is_(True),
             )
         )
         skills = list(result.scalars().all())
@@ -1126,7 +1368,7 @@ class AgentRuntime:
         result = await self.db.execute(
             select(ToolDefinition).where(
                 ToolDefinition.id.in_(tool_ids),
-                ToolDefinition.enabled == True,
+                ToolDefinition.enabled.is_(True),
             )
         )
         tools = list(result.scalars().all())
@@ -1176,7 +1418,7 @@ class AgentRuntime:
 
     async def _load_agent(self, agent_id: str) -> Agent | None:
         result = await self.db.execute(
-            select(Agent).where(Agent.id == agent_id, Agent.enabled == True)
+            select(Agent).where(Agent.id == agent_id, Agent.enabled.is_(True))
         )
         return result.scalar_one_or_none()
 

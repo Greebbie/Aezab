@@ -14,12 +14,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import re
 import threading
 import time
 from sqlalchemy import select, or_, func, literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.config import settings
 from server.models.knowledge import KnowledgeChunk, KnowledgeSource
 from server.schemas.knowledge import RetrievalHit, RetrievalResponse
 
@@ -43,6 +45,32 @@ _STOPWORDS_EN = frozenset({
 
 _STOPWORDS = _STOPWORDS_ZH | _STOPWORDS_EN
 
+_CJK_TEXT_RE = re.compile(r"[\u4e00-\u9fff]+")
+
+
+def _filter_tokens(tokens: list[str]) -> list[str]:
+    """Normalize tokens and remove empty, single-character, and stopword terms."""
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        term = token.strip().lower()
+        if len(term) < 2 or term in _STOPWORDS or term in seen:
+            continue
+        filtered.append(term)
+        seen.add(term)
+    return filtered
+
+
+def _cjk_ngrams(text: str) -> list[str]:
+    """Generate fallback 2-4 char CJK n-grams when jieba returns one broad token."""
+    tokens: list[str] = []
+    for segment in _CJK_TEXT_RE.findall(text):
+        max_n = min(4, len(segment))
+        for n in range(2, max_n + 1):
+            for idx in range(0, len(segment) - n + 1):
+                tokens.append(segment[idx:idx + n])
+    return tokens
+
 
 # ── Tokenization ─────────────────────────────────────────────────
 
@@ -55,15 +83,13 @@ def _tokenize(text: str) -> list[str]:
         import jieba
         tokens = jieba.lcut(text)
     except ImportError:
-        # Fallback: split on punctuation/whitespace
-        tokens = re.split(r'[？?！!，,。.、\s：:；;（）()\[\]【】""\'\"]+', text)
+        # Fallback: split on punctuation/whitespace.
+        tokens = re.split(r"[^\w\u4e00-\u9fff]+", text)
 
-    # Filter: remove stopwords, single chars, empty strings
-    return [
-        t.strip().lower()
-        for t in tokens
-        if len(t.strip()) >= 2 and t.strip().lower() not in _STOPWORDS
-    ]
+    filtered = _filter_tokens(tokens)
+    if len(filtered) <= 1 and _CJK_TEXT_RE.search(text):
+        filtered = _filter_tokens([*filtered, *_cjk_ngrams(text)])
+    return filtered
 
 
 # ── BM25 Scorer ──────────────────────────────────────────────────
@@ -194,6 +220,8 @@ class Reranker:
 
     def _load(self) -> bool:
         try:
+            if settings.hf_endpoint:
+                os.environ.setdefault("HF_ENDPOINT", settings.hf_endpoint)
             from sentence_transformers import CrossEncoder
             logger.info("Loading cross-encoder reranker: BAAI/bge-reranker-v2-m3")
             self._model = CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=512)

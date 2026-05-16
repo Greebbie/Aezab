@@ -45,7 +45,7 @@ class CircuitBreaker:
         self._failure_window = failure_window_seconds
         self._recovery_timeout = recovery_timeout_seconds
         self._circuits: dict[str, CircuitStats] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def can_execute(self, service_name: str) -> bool:
         """Check if a request to this service should be allowed."""

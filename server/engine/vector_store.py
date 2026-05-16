@@ -39,6 +39,12 @@ _LOCAL_EMBEDDING_FALLBACKS = [
 _BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
+def configure_huggingface_endpoint() -> None:
+    """Configure HuggingFace downloads before sentence-transformers loads."""
+    if settings.hf_endpoint:
+        os.environ.setdefault("HF_ENDPOINT", settings.hf_endpoint)
+
+
 class EmbeddingModel:
     """Lazy-loaded embedding model with multi-provider support.
 
@@ -138,6 +144,7 @@ class EmbeddingModel:
 
     def _load_local(self) -> bool:
         """Try loading local sentence-transformers models in cascade order."""
+        configure_huggingface_endpoint()
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError:
@@ -243,6 +250,20 @@ class VectorStoreManager(VectorStoreAdapter):
         self._is_hnsw: bool = False
         self._load_or_create()
 
+    def _sync_sidecar_length(self, ntotal: int) -> None:
+        """Keep sidecar positions aligned with FAISS vector positions."""
+        if len(self._ids) < ntotal:
+            missing = ntotal - len(self._ids)
+            self._ids.extend([""] * missing)
+        elif len(self._ids) > ntotal:
+            self._ids = self._ids[:ntotal]
+
+        if len(self._domains) < ntotal:
+            missing = ntotal - len(self._domains)
+            self._domains.extend([""] * missing)
+        elif len(self._domains) > ntotal:
+            self._domains = self._domains[:ntotal]
+
     @classmethod
     def get_instance(cls) -> VectorStoreManager | None:
         if cls._instance is None:
@@ -268,8 +289,8 @@ class VectorStoreManager(VectorStoreAdapter):
                 loaded_index = faiss.read_index(self._index_path)
                 with open(self._sidecar_path, "r") as f:
                     data = json.load(f)
-                self._ids = data.get("ids", [])
-                self._domains = data.get("domains", [])
+                self._ids = [cid or "" for cid in data.get("ids", [])]
+                self._domains = [domain or "" for domain in data.get("domains", [])]
 
                 # Dimension mismatch detection
                 if loaded_index.d != self._embedding.dimension:
@@ -284,6 +305,7 @@ class VectorStoreManager(VectorStoreAdapter):
                 # Detect index type
                 self._is_hnsw = hasattr(loaded_index, 'hnsw')
                 self._index = loaded_index
+                self._sync_sidecar_length(loaded_index.ntotal)
 
                 if not self._is_hnsw:
                     logger.warning(
@@ -373,10 +395,13 @@ class VectorStoreManager(VectorStoreAdapter):
         for score, idx in zip(scores[0], indices[0]):
             if idx < 0 or idx >= len(self._ids):
                 continue
+            chunk_id = self._ids[idx]
+            if not chunk_id:
+                continue
             if domain and self._domains[idx] != domain:
                 continue
             results.append({
-                "chunk_id": self._ids[idx],
+                "chunk_id": chunk_id,
                 "score": float(score),
                 "domain": self._domains[idx],
             })
@@ -400,19 +425,14 @@ class VectorStoreManager(VectorStoreAdapter):
         id_set = set(chunk_ids)
         removed = 0
         with self._write_lock:
-            new_ids: list[str] = []
-            new_domains: list[str] = []
             for i, cid in enumerate(self._ids):
                 if cid in id_set:
                     removed += 1
-                else:
-                    new_ids.append(cid)
-                    new_domains.append(self._domains[i])
-            self._ids = new_ids
-            self._domains = new_domains
+                    self._ids[i] = ""
+                    self._domains[i] = ""
         if removed > 0:
             logger.info(
-                "Removed %d IDs from FAISS sidecar (index vectors remain until rebuild).",
+                "Marked %d FAISS sidecar IDs as deleted (index vectors remain until rebuild).",
                 removed,
             )
         return removed
@@ -496,6 +516,16 @@ def get_vector_store() -> VectorStoreAdapter | None:
         except Exception as e:
             logger.warning("Failed to initialize vector store (%s): %s", backend, e)
             return None
+
+
+def get_vector_store_if_initialized() -> VectorStoreAdapter | None:
+    """Return the vector store only if it has already been initialized.
+
+    Runtime request paths use this to avoid blocking a user request on first
+    embedding model download/load. Indexing and admin rebuild paths should call
+    get_vector_store() when they intentionally want to initialize the backend.
+    """
+    return _vector_store_instance
 
 
 def _init_faiss() -> VectorStoreManager | None:

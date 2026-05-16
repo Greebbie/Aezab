@@ -99,7 +99,7 @@ export const toolApi = {
   create: (data: ToolCreate) => api.post<Tool>('/tools/', data),
   update: (id: string, data: ToolUpdate) => api.put<Tool>(`/tools/${id}`, data),
   delete: (id: string) => api.delete(`/tools/${id}`),
-  test: (data: { tool_id: string; input?: Record<string, unknown> }) => api.post('/tools/test', data),
+  test: (data: { tool_id: string; test_input?: Record<string, unknown> }) => api.post('/tools/test', data),
 };
 
 // ── Skills ─────────────────────────────────────────
@@ -144,6 +144,14 @@ export const performanceApi = {
   getCurrentConfig: () => api.get<Record<string, unknown>>('/performance/current-config'),
   updateConfig: (data: Record<string, unknown>) => api.post('/performance/update-config', data),
   getCircuitBreakerStatus: () => api.get('/performance/circuit-breaker/status'),
+};
+
+export const vectorAdminApi = {
+  getModelStatus: () => api.get('/vector-admin/model-status'),
+  warmup: () => api.post('/vector-admin/warmup'),
+  getStats: () => api.get('/vector-admin/stats'),
+  rebuild: () => api.post('/vector-admin/rebuild'),
+  health: () => api.get('/vector-admin/health'),
 };
 
 // ── Auth ─────────────────────────────────────────

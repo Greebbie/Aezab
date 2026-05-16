@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -10,10 +11,24 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from server.api.agent_capabilities import router as agent_capabilities_router
+from server.api.agent_connections import router as agent_connections_router
+from server.api.agent_skills import router as agent_skills_router
+from server.api.agents import router as agents_router
+from server.api.audit import router as audit_router
+from server.api.auth import router as auth_router
+from server.api.invoke import router as invoke_router
+from server.api.knowledge import router as knowledge_router
+from server.api.llm_configs import router as llm_configs_router
+from server.api.mock_tools import router as mock_tools_router
+from server.api.performance import router as performance_router
+from server.api.skills import router as skills_router
+from server.api.tools import router as tools_router
+from server.api.vector_admin import router as vector_admin_router
+from server.api.workflows import router as workflows_router
 from server.config import settings
 
 logger = logging.getLogger(__name__)
@@ -90,23 +105,6 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(RequestIDMiddleware)
 
-# ── Register routers ────────────────────────────────
-from server.api.invoke import router as invoke_router
-from server.api.agents import router as agents_router
-from server.api.workflows import router as workflows_router
-from server.api.knowledge import router as knowledge_router
-from server.api.tools import router as tools_router
-from server.api.audit import router as audit_router
-from server.api.mock_tools import router as mock_tools_router
-from server.api.llm_configs import router as llm_configs_router
-from server.api.performance import router as performance_router
-from server.api.vector_admin import router as vector_admin_router
-from server.api.skills import router as skills_router
-from server.api.agent_skills import router as agent_skills_router
-from server.api.agent_connections import router as agent_connections_router
-from server.api.agent_capabilities import router as agent_capabilities_router
-from server.api.auth import router as auth_router
-
 prefix = settings.api_prefix
 
 app.include_router(invoke_router, prefix=prefix, tags=["invoke"])
@@ -142,14 +140,33 @@ async def health():
         status["components"]["database"] = {"status": "unhealthy", "error": str(e)}
         status["status"] = "degraded"
 
-    # Check vector store
+    # Check vector store without initializing embedding models. Heavy readiness
+    # checks live under /api/v1/vector-admin/*.
     try:
-        from server.engine.vector_store import get_vector_store
-        vs = get_vector_store()
-        if vs:
-            status["components"]["vector_store"] = {"status": "healthy", "count": vs.count()}
+        if settings.vector_store == "faiss":
+            index_path = settings.faiss_index_path
+            sidecar_path = index_path + ".ids.json"
+            vector_count = None
+            if os.path.exists(sidecar_path):
+                with open(sidecar_path, "r") as f:
+                    data = json.load(f)
+                vector_count = len([cid for cid in data.get("ids", []) if cid])
+            if os.path.exists(index_path):
+                status["components"]["vector_store"] = {
+                    "status": "healthy",
+                    "backend": "faiss",
+                    "count": vector_count,
+                }
+            else:
+                status["components"]["vector_store"] = {
+                    "status": "not_initialized",
+                    "backend": "faiss",
+                }
         else:
-            status["components"]["vector_store"] = {"status": "not_initialized"}
+            status["components"]["vector_store"] = {
+                "status": "configured",
+                "backend": settings.vector_store,
+            }
     except Exception as e:
         status["components"]["vector_store"] = {"status": "unhealthy", "error": str(e)}
 
@@ -174,7 +191,7 @@ async def health():
 # routes — this avoids the catch-all @app.get("/{path:path}") problem that
 # intercepts /api/* paths (including FastAPI's trailing-slash redirects).
 if STATIC_DIR.is_dir():
-    from starlette.types import ASGIApp, Receive, Scope, Send
+    from starlette.types import Receive, Scope, Send
 
     _index_html = STATIC_DIR / "index.html"
     _static_files = StaticFiles(directory=str(STATIC_DIR))

@@ -29,6 +29,27 @@ class ToolInvocationError(Exception):
 # ── Direct in-process mock tool handlers ─────────────────────────
 # These are called directly without HTTP, avoiding loopback issues.
 
+_BUILTIN_TOOL_ALIASES = {
+    "calculator": "calculator",
+    "calc": "calculator",
+    "weather": "weather",
+    "unit_converter": "unit_converter",
+    "unit": "unit_converter",
+    "converter": "unit_converter",
+    "timestamp": "timestamp",
+    "timestamp_tool": "timestamp",
+    "time": "timestamp",
+    "create_work_order": "create_work_order",
+    "work_order": "create_work_order",
+    "webhook": "webhook",
+    "webhook_receiver": "webhook",
+}
+
+
+def _normalize_tool_name(name: str) -> str:
+    return name.strip().lower().replace("-", "_").replace(" ", "_")
+
+
 def _resolve_mock_handler(endpoint: str):
     """If the endpoint points to a known mock-tool path, return the handler."""
     if not endpoint:
@@ -37,10 +58,19 @@ def _resolve_mock_handler(endpoint: str):
     return _MOCK_TOOL_HANDLERS.get(path)
 
 
+def _resolve_builtin_handler(name: str):
+    """Resolve a built-in function tool by its saved tool name."""
+    builtin_name = _BUILTIN_TOOL_ALIASES.get(_normalize_tool_name(name))
+    if not builtin_name:
+        return None
+    return _MOCK_TOOL_HANDLERS.get(f"/api/v1/mock-tools/{builtin_name}")
+
+
 def _lazy_init_handlers() -> dict:
     """Lazily import mock tool functions to avoid circular imports."""
     from server.api.mock_tools import (
         calculator,
+        create_work_order,
         weather,
         unit_converter,
         timestamp_tool,
@@ -51,6 +81,7 @@ def _lazy_init_handlers() -> dict:
         "/api/v1/mock-tools/weather": weather,
         "/api/v1/mock-tools/unit_converter": unit_converter,
         "/api/v1/mock-tools/timestamp": timestamp_tool,
+        "/api/v1/mock-tools/create_work_order": create_work_order,
         "/api/v1/mock-tools/webhook": webhook_receiver,
     }
 
@@ -67,7 +98,7 @@ class ToolGateway:
 
     async def get_tool(self, tool_id: str) -> ToolDefinition | None:
         result = await self.db.execute(
-            select(ToolDefinition).where(ToolDefinition.id == tool_id, ToolDefinition.enabled == True)
+            select(ToolDefinition).where(ToolDefinition.id == tool_id, ToolDefinition.enabled.is_(True))
         )
         return result.scalar_one_or_none()
 
@@ -124,6 +155,13 @@ class ToolGateway:
 
     async def _call(self, tool: ToolDefinition, input_data: dict[str, Any]) -> dict[str, Any]:
         """Execute a single tool call — dispatches to in-process mock, or HTTP."""
+        schema_error = self._validate_input_schema(
+            getattr(tool, "input_schema", None),
+            input_data,
+        )
+        if schema_error:
+            raise ToolInvocationError(tool.name, schema_error, recoverable=False)
+
         # 1. Try direct in-process call for mock tools (no HTTP needed)
         handler = self._get_mock_handler(tool)
         if handler is not None:
@@ -138,6 +176,13 @@ class ToolGateway:
         if not _MOCK_TOOL_HANDLERS:
             _MOCK_TOOL_HANDLERS = _lazy_init_handlers()
 
+        # Function-category tools are selected by name in the console and do
+        # not require an HTTP endpoint.
+        if tool.category == "function":
+            handler = _resolve_builtin_handler(tool.name)
+            if handler:
+                return handler
+
         # Check by endpoint URL path
         if tool.endpoint:
             handler = _resolve_mock_handler(tool.endpoint)
@@ -145,6 +190,86 @@ class ToolGateway:
                 return handler
 
         return None
+
+    @classmethod
+    def _validate_input_schema(
+        cls,
+        schema: dict[str, Any] | None,
+        input_data: dict[str, Any],
+    ) -> str | None:
+        """Validate the common JSON-schema subset used by tool definitions."""
+        if not schema:
+            return None
+
+        schema_type = schema.get("type")
+        if schema_type and schema_type != "object":
+            return None
+
+        if not isinstance(input_data, dict):
+            return "Tool input must be an object"
+
+        properties = schema.get("properties") or {}
+        required = schema.get("required") or []
+
+        missing = [field for field in required if field not in input_data]
+        if missing:
+            return f"Missing required tool input field(s): {', '.join(missing)}"
+
+        if schema.get("additionalProperties") is False:
+            unknown = [field for field in input_data if field not in properties]
+            if unknown:
+                return f"Unknown tool input field(s): {', '.join(unknown)}"
+
+        for field, value in input_data.items():
+            field_schema = properties.get(field)
+            if not isinstance(field_schema, dict):
+                continue
+
+            expected_type = field_schema.get("type")
+            if expected_type and not cls._matches_json_type(value, expected_type):
+                return f"Tool input field '{field}' must be {expected_type}"
+
+            if "enum" in field_schema and value not in field_schema["enum"]:
+                allowed = ", ".join(str(item) for item in field_schema["enum"])
+                return f"Tool input field '{field}' must be one of: {allowed}"
+
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                minimum = field_schema.get("minimum")
+                maximum = field_schema.get("maximum")
+                if minimum is not None and value < minimum:
+                    return f"Tool input field '{field}' must be >= {minimum}"
+                if maximum is not None and value > maximum:
+                    return f"Tool input field '{field}' must be <= {maximum}"
+
+            if isinstance(value, str):
+                min_length = field_schema.get("minLength")
+                max_length = field_schema.get("maxLength")
+                if min_length is not None and len(value) < min_length:
+                    return f"Tool input field '{field}' must be at least {min_length} characters"
+                if max_length is not None and len(value) > max_length:
+                    return f"Tool input field '{field}' must be at most {max_length} characters"
+
+        return None
+
+    @staticmethod
+    def _matches_json_type(value: Any, expected_type: str | list[str]) -> bool:
+        types = expected_type if isinstance(expected_type, list) else [expected_type]
+        for item in types:
+            if item == "string" and isinstance(value, str):
+                return True
+            if item == "number" and isinstance(value, (int, float)) and not isinstance(value, bool):
+                return True
+            if item == "integer" and isinstance(value, int) and not isinstance(value, bool):
+                return True
+            if item == "boolean" and isinstance(value, bool):
+                return True
+            if item == "object" and isinstance(value, dict):
+                return True
+            if item == "array" and isinstance(value, list):
+                return True
+            if item == "null" and value is None:
+                return True
+        return False
 
     @staticmethod
     def _is_localhost(url: str) -> bool:
@@ -203,11 +328,34 @@ class ToolGateway:
             circuit_breaker.record_failure(service_name)
             raise ToolInvocationError(tool.name, str(e), recoverable=True) from e
 
-    async def test_connectivity(self, tool_id: str) -> dict[str, Any]:
+    async def test_connectivity(
+        self,
+        tool_id: str,
+        test_input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Test if a tool endpoint is reachable."""
         tool = await self.get_tool(tool_id)
         if tool is None:
             return {"success": False, "error": "Tool not found"}
+
+        if test_input is not None:
+            t0 = time.perf_counter()
+            try:
+                response = await self._call(tool, test_input)
+                success = response.get("success", True) is not False
+                return {
+                    "success": success,
+                    "status_code": 200 if success else 400,
+                    "response": response,
+                    "error": response.get("error") if not success else None,
+                    "latency_ms": (time.perf_counter() - t0) * 1000,
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "latency_ms": (time.perf_counter() - t0) * 1000,
+                }
 
         # Check for in-process mock handler first
         if self._get_mock_handler(tool):

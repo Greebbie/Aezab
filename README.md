@@ -93,7 +93,7 @@ HLAB_DISABLE_AUTH=true python -m uvicorn server.main:app --host 0.0.0.0 --port 8
 
 首次启动会自动创建数据库和所有表，无需手动迁移。
 
-> 嵌入模型（bge-m3, ~2.3GB）也会在首次使用时自动下载。默认使用 `hf-mirror.com` 镜像源，**国内外均可访问**。
+> 嵌入模型（bge-m3, ~2.3GB）会在首次使用或设置页预热时下载。默认使用 `hf-mirror.com` 镜像源；实际可用性仍取决于客户网络和防火墙策略。
 
 ### 5. 打开控制台
 
@@ -264,7 +264,7 @@ headlessAIAgentPlatform/
 
 | 配置项 | 说明 |
 |--------|------|
-| **下载源** | 默认 `hf-mirror.com`（国内 CDN），国内外均可访问。可通过 `HLAB_HF_ENDPOINT` 配置 |
+| **下载源** | 默认 `hf-mirror.com`，可通过 `HLAB_HF_ENDPOINT` 配置；实际下载取决于客户网络 |
 | **级联降级** | bge-m3 下载失败时自动降级：bge-small-zh (512维) → MiniLM-L6 (384维) → multilingual-MiniLM (384维) |
 | **首次启动** | 模型约 2.3GB，自动下载到 `~/.cache/huggingface`，后续启动秒级加载 |
 | **API 替代** | 设置 `HLAB_EMBEDDING_PROVIDER=dashscope` 可使用通义千问的嵌入 API，无需本地模型 |
@@ -331,7 +331,7 @@ HLAB_SECRET_KEY=随机64位字符串              # JWT 签名密钥
 | `HLAB_LLM_TIMEOUT` | `60` | LLM 超时（秒） |
 | `HLAB_EMBEDDING_PROVIDER` | `local` | 嵌入模型来源（`local` = 本地 sentence-transformers） |
 | `HLAB_EMBEDDING_MODEL` | `BAAI/bge-m3` | 嵌入模型（首次运行自动下载） |
-| `HLAB_HF_ENDPOINT` | `https://hf-mirror.com` | HuggingFace 镜像（国内外均可访问） |
+| `HLAB_HF_ENDPOINT` | `https://hf-mirror.com` | HuggingFace 镜像，可按客户网络切换为内网镜像或官方源 |
 | `HLAB_VECTOR_STORE` | `faiss` | 向量存储（`faiss` 或 `pgvector`） |
 | `HLAB_DISABLE_AUTH` | `true` | 关闭认证（生产必须设为 false） |
 | `HLAB_AUDIT_ENABLED` | `true` | 启用审计日志 |

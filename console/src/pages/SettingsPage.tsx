@@ -7,7 +7,7 @@ import {
   ThunderboltOutlined, DashboardOutlined, SafetyCertificateOutlined,
   CheckCircleOutlined, SettingOutlined,
 } from '@ant-design/icons';
-import { performanceApi } from '../api';
+import { performanceApi, vectorAdminApi } from '../api';
 
 interface PresetData {
   name: string;
@@ -43,6 +43,9 @@ export default function SettingsPage() {
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [applyingPreset, setApplyingPreset] = useState<string | null>(null);
   const [savingConfig, setSavingConfig] = useState(false);
+  const [modelStatus, setModelStatus] = useState<Record<string, any>>({});
+  const [loadingModelStatus, setLoadingModelStatus] = useState(false);
+  const [warmingModel, setWarmingModel] = useState(false);
   const [form] = Form.useForm();
 
   const loadPresets = async () => {
@@ -73,7 +76,43 @@ export default function SettingsPage() {
   useEffect(() => {
     loadPresets();
     loadCurrentConfig();
+    loadModelStatus();
   }, []);
+
+  const loadModelStatus = async () => {
+    setLoadingModelStatus(true);
+    try {
+      const res = await vectorAdminApi.getModelStatus();
+      setModelStatus(res.data);
+    } catch {
+      message.error('Failed to load embedding model status');
+    } finally {
+      setLoadingModelStatus(false);
+    }
+  };
+
+  const handleWarmupModel = async () => {
+    setWarmingModel(true);
+    try {
+      const res = await vectorAdminApi.warmup();
+      setModelStatus({
+        ...modelStatus,
+        loaded: res.data.status === 'ready',
+        loaded_model: res.data.loaded_model,
+        loaded_dimension: res.data.dimension,
+        hf_endpoint: res.data.hf_endpoint,
+      });
+      if (res.data.status === 'ready') {
+        message.success(`Embedding model ready: ${res.data.loaded_model || 'configured model'}`);
+      } else {
+        message.warning(res.data.message || 'Embedding model is not ready');
+      }
+    } catch (err: any) {
+      message.error('Failed to warm up embedding model: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      setWarmingModel(false);
+    }
+  };
 
   const handleApplyPreset = async (presetKey: string) => {
     setApplyingPreset(presetKey);
@@ -112,6 +151,34 @@ export default function SettingsPage() {
   return (
     <div>
       <h2>Performance Settings</h2>
+
+      <Card
+        title={<Space><SettingOutlined />Embedding Model</Space>}
+        extra={
+          <Space>
+            <Button onClick={loadModelStatus} loading={loadingModelStatus}>Refresh</Button>
+            <Button type="primary" onClick={handleWarmupModel} loading={warmingModel}>
+              Warm Up / Download
+            </Button>
+          </Space>
+        }
+        style={{ marginBottom: 24 }}
+      >
+        <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+          <Descriptions.Item label="Provider">{modelStatus.provider || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Configured Model">{modelStatus.configured_model || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Loaded">
+            <Tag color={modelStatus.loaded ? 'green' : 'default'}>
+              {modelStatus.loaded ? 'Ready' : 'Not loaded'}
+            </Tag>
+          </Descriptions.Item>
+          <Descriptions.Item label="Loaded Model">{modelStatus.loaded_model || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Dimension">
+            {modelStatus.loaded_dimension || modelStatus.configured_dimension || '-'}
+          </Descriptions.Item>
+          <Descriptions.Item label="HF Endpoint">{modelStatus.hf_endpoint || '-'}</Descriptions.Item>
+        </Descriptions>
+      </Card>
 
       {/* ── Preset Cards ─────────────────────────────────── */}
       <Divider orientation="left">Presets</Divider>

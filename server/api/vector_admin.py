@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
@@ -10,12 +11,66 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import get_db
 from server.middleware.auth import get_current_user
-from server.engine.vector_store import get_vector_store
+from server.config import settings
+from server.engine.vector_store import EmbeddingModel, get_vector_store
 from server.models.knowledge import KnowledgeChunk
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+@router.get("/model-status")
+async def model_status():
+    """Show embedding model configuration and load state without forcing a download."""
+    embedding = EmbeddingModel._instance
+    return {
+        "provider": settings.embedding_provider,
+        "configured_model": settings.embedding_model,
+        "configured_dimension": settings.embedding_dim,
+        "hf_endpoint": settings.hf_endpoint,
+        "env_hf_endpoint": os.environ.get("HF_ENDPOINT"),
+        "loaded": embedding is not None,
+        "loaded_model": getattr(embedding, "_model_name", "") if embedding else "",
+        "loaded_dimension": embedding.dimension if embedding else None,
+        "vector_store": settings.vector_store,
+    }
+
+
+@router.post("/warmup")
+async def warmup_vector_store():
+    """Initialize embedding/vector store so admins can pre-download models after setup."""
+    try:
+        vs = get_vector_store()
+    except Exception as exc:
+        logger.exception("Vector warmup failed")
+        return {
+            "status": "error",
+            "message": str(exc),
+            "provider": settings.embedding_provider,
+            "configured_model": settings.embedding_model,
+            "hf_endpoint": settings.hf_endpoint,
+        }
+
+    if vs is None:
+        return {
+            "status": "unavailable",
+            "message": "Embedding model or vector store could not be initialized",
+            "provider": settings.embedding_provider,
+            "configured_model": settings.embedding_model,
+            "hf_endpoint": settings.hf_endpoint,
+        }
+
+    embedding = EmbeddingModel._instance
+    return {
+        "status": "ready",
+        "backend": "pgvector" if "PgVector" in type(vs).__name__ else "faiss",
+        "index_count": vs.count(),
+        "dimension": vs.dimension,
+        "loaded_model": getattr(embedding, "_model_name", "") if embedding else "",
+        "provider": settings.embedding_provider,
+        "hf_endpoint": settings.hf_endpoint,
+    }
 
 
 @router.get("/stats")

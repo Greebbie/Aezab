@@ -34,7 +34,7 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Node — root and console
+# Node - root and console
 node_modules/
 package-lock.json
 console/package-lock.json
@@ -48,16 +48,32 @@ data/
 # Pre-built frontend
 static/
 
-# Claude Code / AI tooling (internal, not for repo)
+# AI tooling and local workspace instructions (internal, not for repo)
 .claude/
+.codex/
+.superpowers/
+.playwright-mcp/
+AGENTS.md
 CLAUDE.md
 TRACKING.md
 REQUIREMENTS.md
-docs/superpowers/
-.superpowers/
-.playwright-mcp/
+PROGRESS.md
+progress.md
+*progress*.md
 
-# Tests (contain API keys, run locally only)
+# Local evaluation/demo artifacts (not part of the public repo)
+docs/superpowers/
+docs/demo-scenarios.md
+docs/functional-architecture-evaluation-*.md
+docs/*progress*.md
+docs/*tracking*.md
+docs/*test*.md
+scripts/demo_seed_and_smoke.py
+scripts/playwright_full_smoke.py
+hlab-visible-*.png
+settings-*.png
+
+# Tests (contain local keys and customer-specific fixtures)
 tests/
 demo_full_test.py
 test_e2e.js
@@ -69,3 +85,4 @@ test-screenshots/
 htmlcov/
 .coverage
 .pytest_cache/
+.ruff_cache/

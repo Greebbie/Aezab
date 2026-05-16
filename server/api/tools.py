@@ -86,11 +86,11 @@ async def delete_tool(tool_id: str, db: AsyncSession = Depends(get_db)):
 async def test_tool(body: ToolTestRequest, db: AsyncSession = Depends(get_db)):
     """Test a tool's connectivity and basic invocation."""
     gw = ToolGateway(db)
-    result = await gw.test_connectivity(body.tool_id)
+    result = await gw.test_connectivity(body.tool_id, body.test_input)
     return ToolTestResponse(
         tool_id=body.tool_id,
         success=result["success"],
-        response=result.get("status_code"),
+        response=result.get("response", result.get("status_code")),
         error=result.get("error"),
         latency_ms=result.get("latency_ms", 0),
     )

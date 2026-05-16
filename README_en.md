@@ -287,9 +287,9 @@ Any provider using the OpenAI-compatible API format can be connected via `openai
 
 The default embedding model is **BAAI/bge-m3** (1024-dimensional, multilingual).
 
-- **Download source**: Defaults to `hf-mirror.com` (CDN accessible globally, optimized for China). Configurable via `HLAB_HF_ENDPOINT`.
+- **Download source**: Defaults to `hf-mirror.com` and is configurable via `HLAB_HF_ENDPOINT`. Actual availability still depends on the customer's network and firewall policy.
 - **Cascade fallback**: If bge-m3 fails to download, automatically falls back to: bge-small-zh (512D) -> MiniLM-L6 (384D) -> multilingual-MiniLM (384D).
-- **First startup**: The model (~2.3GB) downloads automatically to `~/.cache/huggingface`. Subsequent starts load from cache instantly.
+- **First use / warmup**: Local models are downloaded to `~/.cache/huggingface`. Docker Compose persists this cache in `hlab-model-cache`. Admins can trigger download from **Settings -> Embedding Model -> Warm Up / Download**.
 - **API alternative**: Set `HLAB_EMBEDDING_PROVIDER=dashscope` to use DashScope's embedding API instead of local models.
 
 ---
@@ -371,7 +371,7 @@ HLAB_SECRET_KEY=random-64-char-string        # JWT signing key
 | `HLAB_LLM_TIMEOUT` | `60` | LLM call timeout (seconds) |
 | `HLAB_EMBEDDING_PROVIDER` | `local` | Embedding provider (`local` = sentence-transformers) |
 | `HLAB_EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding model (auto-downloads on first run) |
-| `HLAB_HF_ENDPOINT` | `https://hf-mirror.com` | HuggingFace mirror URL (for China/global access) |
+| `HLAB_HF_ENDPOINT` | `https://hf-mirror.com` | HuggingFace mirror URL; switch to an internal mirror or official endpoint as needed |
 | `HLAB_VECTOR_STORE` | `faiss` | Vector storage backend (`faiss` or `pgvector`) |
 | `HLAB_DISABLE_AUTH` | `true` | Disable API auth (MUST be false in production) |
 | `HLAB_AUDIT_ENABLED` | `true` | Enable audit logging |

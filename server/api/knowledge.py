@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +18,54 @@ from server.schemas.knowledge import (
 from server.engine.knowledge_retriever import KnowledgeRetriever
 from server.middleware.auth import get_current_user
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+def _embed_chunk_background(chunk_id: str, text: str, domain: str) -> None:
+    """Best-effort vector indexing that must not block API responses."""
+    try:
+        from server.engine.vector_store import get_vector_store
+        vs = get_vector_store()
+        if vs:
+            vs.add(chunk_id, text, domain=domain)
+            vs.save()
+    except Exception as exc:
+        logger.warning("Background vector indexing failed for chunk %s: %s", chunk_id, exc)
+
+
+def _embed_batch_background(items: list[dict[str, str]]) -> None:
+    """Best-effort batch vector indexing that runs after upload responds."""
+    if not items:
+        return
+    try:
+        from server.engine.vector_store import get_vector_store
+        vs = get_vector_store()
+        if vs:
+            vs.add_batch(items)
+            vs.save()
+    except Exception as exc:
+        logger.warning("Background vector batch indexing failed for %d chunks: %s", len(items), exc)
+
+
+def _delete_vectors_background(chunk_ids: list[str], source_id: str) -> None:
+    """Best-effort vector deletion that must not block source deletion."""
+    if not chunk_ids:
+        return
+    try:
+        from server.engine.vector_store import get_vector_store
+        vs = get_vector_store()
+        if vs:
+            removed = vs.delete(chunk_ids)
+            if removed:
+                vs.save()
+    except Exception as exc:
+        logger.warning(
+            "Deleted knowledge source %s but failed to prune vector index: %s",
+            source_id,
+            exc,
+        )
 
 
 # ── Knowledge Sources ────────────────────────────────────────────
@@ -65,23 +114,36 @@ async def list_chunks(source_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/sources/{source_id}", status_code=204)
-async def delete_source(source_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_source(
+    source_id: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(KnowledgeSource).where(KnowledgeSource.id == source_id))
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(404, "Source not found")
-    # Delete chunks
+
     chunks = await db.execute(select(KnowledgeChunk).where(KnowledgeChunk.source_id == source_id))
-    for chunk in chunks.scalars().all():
+    chunk_rows = chunks.scalars().all()
+    chunk_ids = [chunk.id for chunk in chunk_rows if chunk.id]
+
+    for chunk in chunk_rows:
         await db.delete(chunk)
     await db.delete(source)
     await db.commit()
+
+    background_tasks.add_task(_delete_vectors_background, chunk_ids, source_id)
 
 
 # ── KV Entities (fast-answer channel) ────────────────────────────
 
 @router.post("/kv", status_code=201)
-async def add_kv_entity(body: KVEntityCreate, db: AsyncSession = Depends(get_db)):
+async def add_kv_entity(
+    body: KVEntityCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     chunk = KnowledgeChunk(
         source_id=body.source_id,
         content=body.content,
@@ -95,17 +157,10 @@ async def add_kv_entity(body: KVEntityCreate, db: AsyncSession = Depends(get_db)
     source = result.scalar_one_or_none()
     if source:
         source.chunk_count = (source.chunk_count or 0) + 1
+    await db.flush()
     await db.commit()
 
-    # Embed into vector store (non-fatal)
-    try:
-        from server.engine.vector_store import get_vector_store
-        vs = get_vector_store()
-        if vs:
-            vs.add(chunk.id, body.content, domain=body.domain)
-            vs.save()
-    except Exception:
-        pass  # vector embedding failure should not block API response
+    background_tasks.add_task(_embed_chunk_background, chunk.id, body.content, body.domain)
 
     return {"id": chunk.id, "entity_key": body.entity_key}
 
@@ -113,7 +168,11 @@ async def add_kv_entity(body: KVEntityCreate, db: AsyncSession = Depends(get_db)
 # ── FAQ entries ──────────────────────────────────────────────────
 
 @router.post("/faq", status_code=201)
-async def add_faq(body: FAQCreate, db: AsyncSession = Depends(get_db)):
+async def add_faq(
+    body: FAQCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     chunk = KnowledgeChunk(
         source_id=body.source_id,
         content=body.answer,
@@ -126,17 +185,10 @@ async def add_faq(body: FAQCreate, db: AsyncSession = Depends(get_db)):
     source = result.scalar_one_or_none()
     if source:
         source.chunk_count = (source.chunk_count or 0) + 1
+    await db.flush()
     await db.commit()
 
-    # Embed into vector store (non-fatal)
-    try:
-        from server.engine.vector_store import get_vector_store
-        vs = get_vector_store()
-        if vs:
-            vs.add(chunk.id, body.answer, domain=body.domain)
-            vs.save()
-    except Exception:
-        pass
+    background_tasks.add_task(_embed_chunk_background, chunk.id, body.answer, body.domain)
 
     return {"id": chunk.id, "question": body.question}
 
@@ -146,10 +198,16 @@ async def add_faq(body: FAQCreate, db: AsyncSession = Depends(get_db)):
 @router.post("/search", response_model=RetrievalResponse)
 async def search(body: RetrievalRequest, db: AsyncSession = Depends(get_db)):
     """Test knowledge retrieval — used from the console for debugging."""
-    from server.engine.vector_store import get_vector_store
     from server.runtime_config import runtime_config
+    vector_store = None
+    if body.use_rag_channel:
+        try:
+            from server.engine.vector_store import get_vector_store
+            vector_store = get_vector_store()
+        except Exception as exc:
+            logger.warning("Vector store unavailable for search: %s", exc)
     retriever = KnowledgeRetriever(
-        db, vector_store=get_vector_store(),
+        db, vector_store=vector_store,
         runtime_cfg=runtime_config.all(),
     )
     return await retriever.retrieve(
@@ -175,6 +233,24 @@ def _sanitize_filename(filename: str) -> str:
     if ".." in name or "/" in name or "\\" in name:
         raise HTTPException(400, "Invalid filename")
     return name
+
+
+async def _unique_source_name(db: AsyncSession, base_name: str, tenant_id: str) -> str:
+    """Return a tenant-unique source name derived from the uploaded filename."""
+    clean_name = (base_name or "Uploaded document").strip()[:220]
+    result = await db.execute(
+        select(KnowledgeSource.name).where(KnowledgeSource.tenant_id == tenant_id)
+    )
+    existing_names = set(result.scalars().all())
+    if clean_name not in existing_names:
+        return clean_name
+
+    for suffix in range(2, 1000):
+        candidate = f"{clean_name} ({suffix})"
+        if candidate not in existing_names:
+            return candidate
+
+    raise HTTPException(409, "Unable to generate a unique knowledge source name")
 
 
 def _extract_text_from_pdf(raw_bytes: bytes) -> str:
@@ -345,9 +421,12 @@ def _extract_entity_key(content: str) -> str:
 
 @router.post("/upload", status_code=201)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    source_id: str = Form(...),
+    source_id: str | None = Form(None),
+    source_name: str | None = Form(None),
     domain: str = Form("default"),
+    tenant_id: str = Form("default"),
     chunk_size: int = Form(500, ge=50, le=10000),
     chunk_overlap: int = Form(50, ge=0, le=5000),
     db: AsyncSession = Depends(get_db),
@@ -375,12 +454,29 @@ async def upload_document(
         )
 
     # ── Verify source exists ─────────────────────────────────────
-    result = await db.execute(
-        select(KnowledgeSource).where(KnowledgeSource.id == source_id)
-    )
-    source = result.scalar_one_or_none()
-    if not source:
-        raise HTTPException(404, f"Knowledge source '{source_id}' not found")
+    source_id = (source_id or "").strip() or None
+    if source_id:
+        result = await db.execute(
+            select(KnowledgeSource).where(KnowledgeSource.id == source_id)
+        )
+        source = result.scalar_one_or_none()
+        if not source:
+            raise HTTPException(404, f"Knowledge source '{source_id}' not found")
+    else:
+        base_name = (source_name or os.path.splitext(safe_name)[0]).strip()
+        unique_name = await _unique_source_name(db, base_name, tenant_id)
+        source = KnowledgeSource(
+            name=unique_name,
+            source_type="document",
+            source_uri=safe_name,
+            domain=domain,
+            tenant_id=tenant_id,
+            status="processing",
+            metadata_={"filename": safe_name, "auto_created": True},
+        )
+        db.add(source)
+        await db.flush()
+        source_id = source.id
 
     # ── Read file content ────────────────────────────────────────
     raw_bytes = await file.read()
@@ -402,7 +498,7 @@ async def upload_document(
     chunks = _recursive_split(text, chunk_size, chunk_overlap)
 
     # ── Store chunks ─────────────────────────────────────────────
-    created_ids: list[str] = []
+    created_chunks: list[KnowledgeChunk] = []
     for idx, chunk_content in enumerate(chunks):
         entity_key = _extract_entity_key(chunk_content)
         chunk = KnowledgeChunk(
@@ -414,27 +510,22 @@ async def upload_document(
             metadata_={"filename": safe_name, "chunk_size": chunk_size},
         )
         db.add(chunk)
-        created_ids.append(chunk.id)
+        created_chunks.append(chunk)
 
     # ── Update source chunk_count and status ─────────────────────
     source.chunk_count = (source.chunk_count or 0) + len(chunks)
     source.status = "ready"
 
+    await db.flush()
+    created_ids = [chunk.id for chunk in created_chunks if chunk.id]
+
     await db.commit()
 
-    # Embed all chunks into vector store (non-fatal)
-    try:
-        from server.engine.vector_store import get_vector_store
-        vs = get_vector_store()
-        if vs and created_ids:
-            batch = [
-                {"chunk_id": cid, "text": ct, "domain": domain}
-                for cid, ct in zip(created_ids, [c for c in chunks])
-            ]
-            vs.add_batch(batch)
-            vs.save()
-    except Exception:
-        pass  # vector embedding failure should not block upload response
+    batch = [
+        {"chunk_id": cid, "text": ct, "domain": domain}
+        for cid, ct in zip(created_ids, chunks)
+    ]
+    background_tasks.add_task(_embed_batch_background, batch)
 
     return {
         "source_id": source_id,

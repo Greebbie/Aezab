@@ -22,6 +22,7 @@ import httpx
 
 from server.config import settings
 from server.engine.circuit_breaker import circuit_breaker
+from server.exceptions import LLMError, LLMModelError, LLMRateLimitError, LLMTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,42 @@ class LLMAdapter:
         is_local = any(h in self.base_url for h in ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"))
         return httpx.AsyncClient(timeout=t, trust_env=not is_local)
 
+    def _to_llm_error(self, exc: Exception, model: str) -> LLMError:
+        """Normalize provider/client failures into platform LLM errors."""
+        if isinstance(exc, LLMError):
+            return exc
+        if isinstance(exc, httpx.TimeoutException):
+            return LLMTimeoutError(
+                "LLM request timed out",
+                provider=self.base_url,
+                model=model,
+                detail={"timeout_seconds": self.timeout},
+            )
+        if isinstance(exc, httpx.HTTPStatusError):
+            status_code = exc.response.status_code
+            body = exc.response.text[:1000]
+            detail = {"status_code": status_code, "body": body}
+            if status_code == 429:
+                return LLMRateLimitError(
+                    "LLM rate limit exceeded",
+                    provider=self.base_url,
+                    model=model,
+                    detail=detail,
+                )
+            return LLMError(
+                f"LLM HTTP {status_code}: {body[:200]}",
+                provider=self.base_url,
+                model=model,
+                detail=detail,
+            )
+        if isinstance(exc, (KeyError, IndexError, TypeError, ValueError)):
+            return LLMModelError(
+                f"Invalid LLM response: {exc}",
+                provider=self.base_url,
+                model=model,
+            )
+        return LLMError(str(exc), provider=self.base_url, model=model)
+
     def _serialize_messages(self, messages: list[LLMMessage]) -> list[dict]:
         """Serialize LLMMessage list to OpenAI API format.
 
@@ -201,10 +238,9 @@ class LLMAdapter:
 
         service_name = f"llm:{self.base_url}"
         if not circuit_breaker.can_execute(service_name):
-            from server.exceptions import LLMError
             raise LLMError(
                 f"Circuit breaker open for {self.base_url}",
-                provider=getattr(self, "provider", ""),
+                provider=self.base_url,
                 model=model,
             )
 
@@ -218,9 +254,9 @@ class LLMAdapter:
                 resp.raise_for_status()
                 data = resp.json()
             circuit_breaker.record_success(service_name)
-        except Exception:
+        except Exception as exc:
             circuit_breaker.record_failure(service_name)
-            raise
+            raise self._to_llm_error(exc, model) from exc
 
         choice = data["choices"][0]
         message = choice["message"]
@@ -287,10 +323,9 @@ class LLMAdapter:
 
         service_name = f"llm:{self.base_url}"
         if not circuit_breaker.can_execute(service_name):
-            from server.exceptions import LLMError
             raise LLMError(
                 f"Circuit breaker open for {self.base_url}",
-                provider=getattr(self, "provider", ""),
+                provider=self.base_url,
                 model=model,
             )
 
@@ -304,9 +339,9 @@ class LLMAdapter:
                 resp.raise_for_status()
                 data = resp.json()
             circuit_breaker.record_success(service_name)
-        except Exception:
+        except Exception as exc:
             circuit_breaker.record_failure(service_name)
-            raise
+            raise self._to_llm_error(exc, model) from exc
 
         choice = data["choices"][0]
         message = choice["message"]
@@ -416,7 +451,7 @@ async def get_llm_adapter_for_agent(agent, db) -> LLMAdapter:
     result = await db.execute(
         select(LLMConfig).where(
             LLMConfig.tenant_id == agent.tenant_id,
-            LLMConfig.is_default == True,
+            LLMConfig.is_default.is_(True),
         )
     )
     default_config = result.scalar_one_or_none()
