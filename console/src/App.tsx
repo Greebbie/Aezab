@@ -14,6 +14,7 @@ import {
   AppstoreOutlined,
   GlobalOutlined,
   HeartOutlined,
+  LinkOutlined,
 } from '@ant-design/icons';
 
 import AgentsPage from './pages/AgentsPage';
@@ -27,6 +28,7 @@ import LLMConfigsPage from './pages/LLMConfigsPage';
 import SettingsPage from './pages/SettingsPage';
 import SkillsPage from './pages/SkillsPage';
 import HealthPage from './pages/HealthPage';
+import IntegrationsPage from './pages/IntegrationsPage';
 
 const { Header, Sider, Content } = Layout;
 
@@ -44,6 +46,7 @@ export default function App() {
   const menuItems = [
     { key: '/', icon: <DashboardOutlined />, label: t('nav.dashboard') },
     { key: '/playground', icon: <ExperimentOutlined />, label: t('nav.playground') },
+    { key: '/integrations', icon: <LinkOutlined />, label: t('nav.integrations') },
     { key: '/agents', icon: <RobotOutlined />, label: t('nav.agents') },
     { key: '/skills', icon: <AppstoreOutlined />, label: t('nav.skills') },
     { key: '/workflows', icon: <ApartmentOutlined />, label: t('nav.workflows') },
@@ -84,6 +87,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/playground" element={<PlaygroundPage />} />
+            <Route path="/integrations" element={<IntegrationsPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/workflows" element={<WorkflowsPage />} />
             <Route path="/knowledge" element={<KnowledgePage />} />

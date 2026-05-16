@@ -13,6 +13,9 @@ from server.db import get_db
 from server.models.agent import Agent
 from server.models.skill import Skill
 from server.models.agent_skill import AgentSkill
+from server.models.knowledge import KnowledgeSource
+from server.models.tool import ToolDefinition
+from server.models.workflow import Workflow
 from server.middleware.auth import get_current_user
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -57,6 +60,37 @@ def _managed_tag(agent_id: str) -> str:
     return f"agent:{agent_id}"
 
 
+def _optional_trigger_config(keywords: list[str], description: str) -> dict[str, Any] | None:
+    """Store only Agent-specific hints in trigger_config."""
+    trigger_config: dict[str, Any] = {}
+    if keywords:
+        trigger_config["keywords"] = keywords
+    if description.strip():
+        trigger_config["trigger_description"] = description.strip()
+    return trigger_config or None
+
+
+def _knowledge_skill_description(domain: str, source_names: list[str]) -> str:
+    if source_names:
+        return f"Search these knowledge sources for relevant answers: {', '.join(source_names)}."
+    return f"Search knowledge sources in domain '{domain}' for relevant answers."
+
+
+def _workflow_skill_description(workflow: Workflow | None, workflow_id: str) -> str:
+    if workflow is None:
+        return f"Start workflow {workflow_id} when it matches the user request."
+    if workflow.description:
+        return f"{workflow.name}: {workflow.description}"
+    return f"Start workflow: {workflow.name}"
+
+
+def _tool_skill_description(tools: list[ToolDefinition], tool_ids: list[str]) -> str:
+    names = [tool.name for tool in tools]
+    if names:
+        return f"Use selected tools: {', '.join(names)}."
+    return f"Use selected tools: {', '.join(tool_ids)}."
+
+
 def _skill_to_capability(skill: Skill) -> tuple[str, dict]:
     """Convert a managed Skill back into a capability dict.
 
@@ -70,7 +104,7 @@ def _skill_to_capability(skill: Skill) -> tuple[str, dict]:
             "domain": ec.get("domain", "default"),
             "source_ids": ec.get("knowledge_source_ids", []),
             "keywords": tc.get("keywords", []),
-            "description": skill.description or "",
+            "description": tc.get("trigger_description", ""),
         }
     elif skill.skill_type == "workflow":
         return "workflows", {
@@ -154,8 +188,14 @@ async def update_capabilities(
             "knowledge_source_ids": cap.source_ids,
             "domain": cap.domain,
         }
-        trigger_config = {"keywords": cap.keywords} if cap.keywords else None
-        skill_desc = cap.description or f"搜索知识库 ({cap.domain}) 获取相关信息"
+        trigger_config = _optional_trigger_config(cap.keywords, cap.description)
+        source_names: list[str] = []
+        if cap.source_ids:
+            sources_result = await db.execute(
+                select(KnowledgeSource).where(KnowledgeSource.id.in_(cap.source_ids))
+            )
+            source_names = [source.name for source in sources_result.scalars().all()]
+        skill_desc = _knowledge_skill_description(cap.domain, source_names)
 
         if key in existing_map:
             skill = existing_map[key]
@@ -182,24 +222,23 @@ async def update_capabilities(
     for cap in body.workflows:
         key = ("workflow", cap.workflow_id)
         execution_config = {"workflow_id": cap.workflow_id}
-        trigger_config: dict[str, Any] = {}
-        if cap.keywords:
-            trigger_config["keywords"] = cap.keywords
-        if cap.description:
-            trigger_config["trigger_description"] = cap.description
+        trigger_config = _optional_trigger_config(cap.keywords, cap.description)
+        workflow = await db.get(Workflow, cap.workflow_id)
+        skill_desc = _workflow_skill_description(workflow, cap.workflow_id)
 
         if key in existing_map:
             skill = existing_map[key]
             skill.execution_config = execution_config
-            skill.trigger_config = trigger_config or None
+            skill.trigger_config = trigger_config
+            skill.description = skill_desc
             matched_skill_ids.add(skill.id)
         else:
             skill = Skill(
                 name=f"[auto] {agent.name} - 工作流",
-                description=cap.description or "Auto-managed workflow skill",
+                description=skill_desc,
                 skill_type="workflow",
                 execution_config=execution_config,
-                trigger_config=trigger_config or None,
+                trigger_config=trigger_config,
                 managed_by=tag,
                 tenant_id=agent.tenant_id,
             )
@@ -216,24 +255,28 @@ async def update_capabilities(
             "function_calling_enabled": True,
             "max_tool_rounds": 5,
         }
-        trigger_config_t: dict[str, Any] = {}
-        if cap.keywords:
-            trigger_config_t["keywords"] = cap.keywords
-        if cap.description:
-            trigger_config_t["trigger_description"] = cap.description
+        trigger_config_t = _optional_trigger_config(cap.keywords, cap.description)
+        tools_for_description: list[ToolDefinition] = []
+        if cap.tool_ids:
+            tools_result = await db.execute(
+                select(ToolDefinition).where(ToolDefinition.id.in_(cap.tool_ids))
+            )
+            tools_for_description = list(tools_result.scalars().all())
+        skill_desc = _tool_skill_description(tools_for_description, cap.tool_ids)
 
         if key in existing_map:
             skill = existing_map[key]
             skill.execution_config = execution_config
-            skill.trigger_config = trigger_config_t or None
+            skill.trigger_config = trigger_config_t
+            skill.description = skill_desc
             matched_skill_ids.add(skill.id)
         else:
             skill = Skill(
                 name=f"[auto] {agent.name} - 工具调用",
-                description=cap.description or "Auto-managed tool calling skill",
+                description=skill_desc,
                 skill_type="tool_call",
                 execution_config=execution_config,
-                trigger_config=trigger_config_t or None,
+                trigger_config=trigger_config_t,
                 managed_by=tag,
                 tenant_id=agent.tenant_id,
             )

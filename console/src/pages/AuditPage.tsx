@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Input, Button, Card, Timeline, Tag, Empty, Descriptions, Space, Table, message } from 'antd';
 import { SearchOutlined, ReloadOutlined } from '@ant-design/icons';
 import { auditApi } from '../api';
@@ -19,6 +20,8 @@ const EVENT_COLORS: Record<string, string> = {
 };
 
 export default function AuditPage() {
+  const [searchParams] = useSearchParams();
+  const linkedTraceId = searchParams.get('trace_id');
   const [traceId, setTraceId] = useState('');
   const [sessionId, setSessionId] = useState('');
   const [traces, setTraces] = useState<any[]>([]);
@@ -34,13 +37,11 @@ export default function AuditPage() {
     }
   };
 
-  useEffect(() => { loadRecent(); }, []);
-
-  const searchByTrace = async () => {
-    if (!traceId) return;
+  const fetchTrace = async (value: string) => {
+    if (!value) return;
     setLoading(true);
     try {
-      const res = await auditApi.getTrace(traceId);
+      const res = await auditApi.getTrace(value);
       setTraces(res.data);
       if (res.data.length === 0) {
         message.info('未找到匹配的 Trace');
@@ -48,8 +49,23 @@ export default function AuditPage() {
     } catch (e: any) {
       message.error('查询失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
       setTraces([]);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (linkedTraceId) {
+      setTraceId(linkedTraceId);
+      fetchTrace(linkedTraceId);
+      return;
+    }
+    setTraces([]);
+    loadRecent();
+  }, [linkedTraceId]);
+
+  const searchByTrace = async () => {
+    await fetchTrace(traceId);
   };
 
   const searchBySession = async () => {
@@ -78,16 +94,7 @@ export default function AuditPage() {
       title: '操作', key: 'actions', render: (_: any, r: any) => (
         <Button size="small" onClick={async () => {
           setTraceId(r.trace_id);
-          setLoading(true);
-          try {
-            const res = await auditApi.getTrace(r.trace_id);
-            setTraces(res.data);
-            if (res.data.length === 0) message.info('未找到匹配的 Trace');
-          } catch (e: any) {
-            message.error('查询失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
-            setTraces([]);
-          }
-          setLoading(false);
+          await fetchTrace(r.trace_id);
         }}>
           查看链路
         </Button>

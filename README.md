@@ -214,7 +214,17 @@ Playground 输入框左侧的语音按钮支持上传音频和浏览器录音，
 
 进入「测试场」→ 选择 Agent → 开始对话。
 
-右侧面板实时展示：引用来源（命中了哪些知识条目）、调用链追踪（每步的事件和耗时）。
+### 第八步：接入业务系统
+
+进入「接入中心」：
+
+配置边界：「智能体」→ Capabilities 是 Agent 运行时能力的唯一主配置，决定 Agent 能使用哪些知识库、工作流和工具。「接入中心」是开发接入和联调工作台，用于注册外部 API、测试连通性、生成调用示例、快捷绑定工具到 Agent；快捷绑定会写回同一套 Agent Capabilities，不会产生第二套配置。
+
+- **Inbound API**：客户自己的网页、App、CRM、客服系统通过这些入口调用 HlAB Agent。选择 Agent，复制 `/invoke`、`/invoke/stream`、`/asr/transcribe` 的 curl / JavaScript 示例，并直接发送一次真实测试。
+- **ASR**：客户应用把音频上传到 `/asr/transcribe`，拿到文字后再发给 Agent。可在「系统设置」→ Voice Input / ASR Configuration 里配置 DashScope、OpenAI 兼容 ASR 或自部署 FunASR。
+- **Outbound Tools**：Agent 主动调用客户后端 API，例如创建工单、查订单、更新 CRM。点击 Connect External API，填写 endpoint、method、input schema、认证信息，测试连通性后点击 Bind to Agent，让 Agent 通过 Function Calling 调用它。
+- **Workflow Webhooks**：工作流完成或到达关键步骤时回调客户系统。选择工作流和完成步骤，填写客户系统 webhook URL 和 headers；如果没有完成步骤，可自动新增一个 complete step。
+- **Trace & Debug**：查看最近调用记录，按事件类型过滤，并跳转到审计日志排查失败原因。
 
 ---
 
@@ -274,14 +284,24 @@ Playground 输入框左侧的语音按钮支持上传音频和浏览器录音，
 headlessAIAgentPlatform/
 ├── server/                        # FastAPI 后端
 │   ├── api/                       # 70+ REST API 接口
+│   │   ├── invoke.py              # Agent 对话同步 + SSE 流式入口
+│   │   ├── asr.py                 # 语音转文字配置 + 音频上传转写
+│   │   ├── knowledge.py           # 知识库、文档上传、检索测试
+│   │   ├── workflows.py           # 工作流管理
+│   │   └── tools.py               # 外部 HTTP 工具注册与连通性测试
 │   ├── engine/                    # 核心引擎（Agent 执行、RAG 检索、LLM 适配、工作流）
+│   │   ├── agent_runtime.py       # Conversation-first Agent 执行管线
+│   │   ├── asr.py                 # 云 ASR + 自部署 FunASR Provider
+│   │   ├── workflow_executor.py   # 工作流执行、工具调用、完成回调
+│   │   ├── knowledge_retriever.py # 混合 RAG 检索
+│   │   └── tool_gateway.py        # 外部 HTTP 工具调用、认证、重试、熔断
 │   ├── models/                    # 数据库模型（13 张表）
 │   ├── schemas/                   # 请求/响应 Schema
 │   └── config.py                  # 环境变量配置
 ├── console/                       # React + Ant Design 前端
 │   └── src/
 │       ├── api.ts                 # 集中式 API 客户端
-│       ├── pages/                 # 10 个管理页面
+│       ├── pages/                 # 管理页面
 │       └── i18n/                  # 中英文翻译
 ├── tests/                         # 测试（API E2E + Playwright 浏览器）
 ├── pyproject.toml                 # Python 依赖
@@ -296,6 +316,7 @@ headlessAIAgentPlatform/
 |------|------|
 | **仪表盘** | 请求量、延迟、错误率等实时指标 + 图表 |
 | **测试场** | 与 Agent 对话测试，右侧面板展示引用来源和调用链 |
+| **接入中心** | 面向开发者的统一工作台：Inbound API 示例、真实调用测试、Connect External API 向导、Workflow Webhook 向导、Trace & Debug |
 | **智能体** | 创建/编辑 Agent，配置基本信息、能力绑定（知识库/工作流/工具）、高级设置 |
 | **技能** | 管理独立技能（Agent 自动创建的托管技能已自动隐藏） |
 | **工作流** | 定义多步骤业务流程，配置字段类型、校验规则、文件上传 |
@@ -395,6 +416,20 @@ curl -X POST http://localhost:8000/api/v1/asr/transcribe \
 # 健康检查
 curl http://localhost:8000/health
 ```
+
+### 外部系统集成方式
+
+控制台「接入中心」集中展示这些交互方式，并支持按 Agent 生成 curl / JavaScript 示例、发起一次真实 invoke 测试、查看最近 trace。
+
+| 方向 | 接口/能力 | 说明 |
+|------|-----------|------|
+| 外部应用调用 Agent | `POST /api/v1/invoke` | App、客服系统、CRM、网页插件等把文本消息发进来，返回 JSON 结果、引用、工作流状态 |
+| 外部应用流式调用 Agent | `POST /api/v1/invoke/stream` | SSE 返回状态、最终回答、trace、引用，适合聊天窗口逐步展示 |
+| 语音输入 | `POST /api/v1/asr/transcribe` | 外部应用可先上传音频转文字，再把文本发给 `/invoke` |
+| 知识库接入 | `POST /api/v1/knowledge/upload` | 客户可上传 PDF、DOCX、Excel、CSV、TXT，自动切分、入库、向量化 |
+| Agent 调客户后端 | Tools + Function Calling | 在控制台注册 HTTP API、参数 Schema、认证、超时、重试；Agent 会在对话中自动调用 |
+| 工作流回传业务系统 | Workflow complete webhook | 工作流完成后可把收集到的表单数据 POST 到客户系统 |
+| 排障与回放 | Audit APIs | 可按 trace/session 查看工具调用、RAG、工作流执行记录 |
 
 ---
 

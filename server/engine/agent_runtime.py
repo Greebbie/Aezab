@@ -24,6 +24,7 @@ from server.models.agent_skill import AgentSkill
 from server.models.session import ConversationSession, Message
 from server.models.skill import Skill
 from server.models.tool import ToolDefinition
+from server.models.workflow import Workflow
 from server.schemas.invoke import (
     InvokeRequest,
     InvokeResponse,
@@ -229,6 +230,32 @@ class AgentRuntime:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    @staticmethod
+    def _append_agent_specific_instruction(base_desc: str, trigger_config: dict | None) -> str:
+        override = (trigger_config or {}).get("trigger_description", "")
+        override = override.strip() if isinstance(override, str) else ""
+        if not override:
+            return base_desc
+        return f"{base_desc}\nAgent-specific instruction: {override}"
+
+    async def _load_workflow_for_description(self, workflow_id: str) -> Workflow | None:
+        if not self.db or not workflow_id:
+            return None
+        try:
+            result = await self.db.execute(select(Workflow).where(Workflow.id == workflow_id))
+            return result.scalar_one_or_none()
+        except Exception:
+            logger.warning("Failed to load workflow description for %s", workflow_id, exc_info=True)
+            return None
+
+    @staticmethod
+    def _workflow_function_description(workflow: Workflow | None, fallback: str) -> str:
+        if workflow is None:
+            return fallback
+        if workflow.description:
+            return f"{workflow.name}: {workflow.description}"
+        return f"Start workflow: {workflow.name}"
 
     # ── Main invoke entry point ──────────────────────────────
 
@@ -682,6 +709,7 @@ class AgentRuntime:
             f"search_knowledge_{domain}" if domain != "default" else "search_knowledge"
         )
         base_desc = skill.description or f"搜索知识库 ({domain}) 获取相关信息"
+        base_desc = self._append_agent_specific_instruction(base_desc, skill.trigger_config)
         if pre_retrieved:
             desc = base_desc + "（已有初始结果，仅需重新搜索时调用）"
         else:
@@ -721,11 +749,15 @@ class AgentRuntime:
         for tool_def in http_tools:
             orig_fn_name = tool_def["function"]["name"]
             fn_name = unique_name(orig_fn_name)
-            if fn_name != orig_fn_name:
-                tool_def = {
-                    **tool_def,
-                    "function": {**tool_def["function"], "name": fn_name},
-                }
+            function_def = {
+                **tool_def["function"],
+                "name": fn_name,
+                "description": self._append_agent_specific_instruction(
+                    tool_def["function"].get("description", ""),
+                    skill.trigger_config,
+                ),
+            }
+            tool_def = {**tool_def, "function": function_def}
             tool_defs.append(tool_def)
 
             tool_definition = http_tool_map.get(orig_fn_name)
@@ -751,7 +783,10 @@ class AgentRuntime:
             name = unique_name(f"start_workflow_{clean_name}")
         else:
             name = unique_name(f"start_workflow_{workflow_id[:8]}")
-        base_desc = skill.description or f"启动业务流程: {skill.name}"
+        workflow = await self._load_workflow_for_description(workflow_id)
+        fallback_desc = skill.description or f"Start workflow: {skill.name}"
+        base_desc = self._workflow_function_description(workflow, fallback_desc)
+        base_desc = self._append_agent_specific_instruction(base_desc, skill.trigger_config)
         trigger_kw = (skill.trigger_config or {}).get("keywords", [])
         desc = f"{base_desc}（{', '.join(trigger_kw)}）" if trigger_kw else base_desc
 

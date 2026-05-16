@@ -19,7 +19,7 @@ A privately deployable AI Agent platform with a web management console. Visually
 | **Multi-Agent Collaboration** | Agents can delegate tasks to each other with built-in depth limits (max 3) and cycle detection |
 | **LLM Config Management** | Manage multiple LLM provider configs, assign per-agent, with one-click template loading and connectivity testing |
 | **Voice Input / ASR** | Upload audio or record in the browser; connect cloud ASR or self-hosted FunASR with console-managed config and direct testing |
-| **Web Console** | 10-page React management interface covering all features with visual operations |
+| **Web Console** | React management interface covering all features with visual operations |
 | **Headless API** | All features accessible via REST API + SSE streaming, 70+ endpoints |
 | **i18n** | Full Chinese + English interface with browser auto-detection |
 
@@ -224,6 +224,18 @@ Bind tools in the Agent's Capabilities tab. The agent will call them via Functio
 
 Go to **Playground** page -> Select an agent -> Start chatting. The right panel shows real-time Function Calling traces, retrieval results, latency breakdown, and citations.
 
+### 8. Integrate Customer Systems
+
+Go to **Integrations**:
+
+Configuration boundary: **Agent Management -> Capabilities** is the source of truth for what an agent can use at runtime. **Integrations** is the developer workbench for registering external APIs, testing connectivity, generating client snippets, and shortcut-binding a tool to an agent. Shortcut bindings write back to the same Agent Capabilities model.
+
+- **Inbound API**: Customer apps call HlAB agents from websites, mobile apps, CRMs, or support systems. Select an agent, copy `/invoke`, `/invoke/stream`, and `/asr/transcribe` curl / JavaScript examples, and run a real invoke test.
+- **ASR**: Customer apps upload audio to `/asr/transcribe`, receive text, then send that text to an agent. Configure DashScope, OpenAI-compatible ASR, or self-hosted FunASR in **Settings -> Voice Input / ASR Configuration**.
+- **Outbound Tools**: Agents call customer backend APIs, such as creating tickets, checking orders, or updating CRM records. Click **Connect External API**, enter the endpoint, method, input schema, and auth settings, test connectivity, then click **Bind to Agent** so the agent can call it through Function Calling.
+- **Workflow Webhooks**: Workflows call customer systems when a flow reaches completion or a key step. Select a workflow and completion step, enter the customer webhook URL and headers; if no completion step exists, add a complete step from the wizard.
+- **Trace & Debug**: Review recent calls, filter by event type, and jump into Audit when debugging failures.
+
 ---
 
 ## Architecture
@@ -324,6 +336,7 @@ headlessAIAgentPlatform/
 |------|---------|
 | **Dashboard** | Overview: agent count, request volume, average latency, circuit breaker status |
 | **Playground** | Real-time chat with agents; right panel shows function calling chain, citations, latency breakdown |
+| **Integrations** | Developer workbench for Inbound API examples, live invoke testing, Connect External API wizard, Workflow Webhook wizard, and Trace & Debug |
 | **Agents** | Create/edit agents with tabbed config: Basic Info, Capabilities (knowledge/workflow/tools/delegation), Advanced |
 | **Skills** | Manage standalone skills (auto-managed skills from Agent Capabilities are hidden) |
 | **Workflows** | Define multi-step business processes with field types, validation rules, file upload |
@@ -331,6 +344,7 @@ headlessAIAgentPlatform/
 | **Tools** | Register external HTTP APIs as tools, configure parameter schemas, test connectivity |
 | **LLM Configs** | Manage LLM provider configs with one-click templates (Ollama/DashScope/OpenAI/vLLM/ZhipuAI) and connection testing |
 | **Settings** | Performance presets, embedding warmup/download, ASR voice input configuration, upload testing, and advanced tuning |
+| **System Health** | Database, vector index, circuit breaker, and runtime component status |
 | **Audit** | Full call chain replay with event types, timing, and input/output for each step |
 
 ---
@@ -434,6 +448,20 @@ curl http://localhost:8000/api/v1/asr/config
 curl -X POST http://localhost:8000/api/v1/asr/transcribe \
   -F "file=@voice.wav"
 ```
+
+### External Integration Patterns
+
+The **Integrations** page centralizes these flows and can generate curl / JavaScript snippets per agent, run a real invoke test, and link developers to recent traces.
+
+| Direction | API / Capability | Usage |
+|-----------|------------------|-------|
+| External app calls Agent | `POST /api/v1/invoke` | Customer apps, CRM, service desks, web widgets, or mobile apps send text messages and receive JSON answers, citations, and workflow state |
+| External app streams Agent output | `POST /api/v1/invoke/stream` | SSE emits status, final answer, trace id, and citations for chat UIs |
+| Voice input | `POST /api/v1/asr/transcribe` | Upload audio, receive text, then send that text to `/invoke` |
+| Knowledge ingestion | `POST /api/v1/knowledge/upload` | Upload PDF, DOCX, Excel, CSV, or TXT; the platform chunks, stores, and vectorizes content |
+| Agent calls customer backend | Tools + Function Calling | Register HTTP APIs with parameter schema, auth, timeout, and retry; agents call them during conversations |
+| Workflow sends data back | Workflow complete webhook | Completed workflows can POST collected form data to customer systems |
+| Debugging and replay | Audit APIs | Inspect trace/session records for RAG, tool calls, and workflow execution |
 
 ### Health Check
 

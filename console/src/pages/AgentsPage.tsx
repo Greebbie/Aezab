@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
   Table, Button, Modal, Form, Input, Switch, Space, message, Tag,
-  Popconfirm, Select, Collapse, Typography, Tabs, Card, Divider,
+  Popconfirm, Select, Collapse, Typography, Tabs, Card, Divider, Alert,
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, MinusCircleOutlined,
@@ -279,6 +279,36 @@ export default function AgentsPage() {
     }));
 
   // ── Computed ──
+  const renderAdvancedInstruction = (
+    value: string,
+    onChange: (value: string) => void,
+    placeholder: string,
+  ) => (
+    <Collapse
+      ghost
+      size="small"
+      items={[
+        {
+          key: 'advanced',
+          label: 'Agent-specific instruction (advanced)',
+          children: (
+            <Space direction="vertical" style={{ width: '100%' }} size={6}>
+              <Text type="secondary">
+                Normally leave this empty. Use it only when this Agent should use the bound resource differently from its own description.
+              </Text>
+              <TextArea
+                rows={2}
+                placeholder={placeholder}
+                value={value}
+                onChange={e => onChange(e.target.value)}
+              />
+            </Space>
+          ),
+        },
+      ]}
+    />
+  );
+
   const otherAgents = agents.filter(a => a.id !== editing?.id);
 
   // ── Table columns ──
@@ -377,6 +407,14 @@ export default function AgentsPage() {
     </div>
   ) : (
     <div>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="Agent capability source of truth"
+        description="Use this tab to decide what the agent can access at runtime. Resource descriptions drive when the Agent calls a capability; advanced Agent-specific instructions only add special rules for this Agent. Integrations is the developer workbench, and shortcut bindings write back here."
+      />
+
       {/* Knowledge QA */}
       <Card
         size="small"
@@ -408,12 +446,25 @@ export default function AgentsPage() {
               />
               <Button icon={<MinusCircleOutlined />} danger size="small" onClick={() => removeKnowledge(idx)} />
             </div>
-            <TextArea
-              rows={2}
-              placeholder="描述何时使用此知识工具（LLM根据描述判断何时调用）"
-              value={k.description}
-              onChange={e => updateKnowledge(idx, 'description', e.target.value)}
-            />
+            <Space direction="vertical" style={{ width: '100%', marginBottom: 8 }} size={4}>
+              <Text type="secondary">Resource description</Text>
+              {k.source_ids.length > 0 ? (
+                sources
+                  .filter((source: any) => k.source_ids.includes(source.id))
+                  .map((source: any) => (
+                    <Text key={source.id} type="secondary">
+                      {source.name} ({source.domain}) - RAG searches this source's chunks automatically.
+                    </Text>
+                  ))
+              ) : (
+                <Text type="secondary">Select knowledge sources; RAG will use their indexed content directly.</Text>
+              )}
+            </Space>
+            {renderAdvancedInstruction(
+              k.description,
+              value => updateKnowledge(idx, 'description', value),
+              'Example: For this Agent, only use these sources for policy questions.',
+            )}
           </div>
         ))}
       </Card>
@@ -442,12 +493,22 @@ export default function AgentsPage() {
               />
               <Button icon={<MinusCircleOutlined />} danger size="small" onClick={() => removeWorkflow(idx)} />
             </div>
-            <TextArea
-              rows={2}
-              placeholder="描述何时使用此工作流（LLM根据描述判断何时调用）"
-              value={w.description}
-              onChange={e => updateWorkflow(idx, 'description', e.target.value)}
-            />
+            {(() => {
+              const workflow = workflows.find((wf: any) => wf.id === w.workflow_id);
+              return (
+                <Space direction="vertical" style={{ width: '100%', marginBottom: 8 }} size={4}>
+                  <Text type="secondary">Resource description</Text>
+                  <Text type="secondary">
+                    {workflow?.description || workflow?.name || 'Select a workflow; its name, description, and steps tell the Agent when to start it.'}
+                  </Text>
+                </Space>
+              );
+            })()}
+            {renderAdvancedInstruction(
+              w.description,
+              value => updateWorkflow(idx, 'description', value),
+              'Example: For this Agent, start this workflow only for paid customers.',
+            )}
           </div>
         ))}
       </Card>
@@ -476,12 +537,25 @@ export default function AgentsPage() {
               />
               <Button icon={<MinusCircleOutlined />} danger size="small" onClick={() => removeTool(idx)} />
             </div>
-            <TextArea
-              rows={2}
-              placeholder="Describe when to use these tools (LLM uses this description to decide when to call them)"
-              value={t.description}
-              onChange={e => updateTool(idx, 'description', e.target.value)}
-            />
+            <Space direction="vertical" style={{ width: '100%', marginBottom: 8 }} size={4}>
+              <Text type="secondary">Resource description</Text>
+              {t.tool_ids.length > 0 ? (
+                tools
+                  .filter((tool: any) => t.tool_ids.includes(tool.id))
+                  .map((tool: any) => (
+                    <Text key={tool.id} type="secondary">
+                      {tool.name} - {tool.description || 'No description yet; add one in Tools so the Agent knows when to call it.'}
+                    </Text>
+                  ))
+              ) : (
+                <Text type="secondary">Select tools; each tool's name, description, and input schema are exposed to function calling individually.</Text>
+              )}
+            </Space>
+            {renderAdvancedInstruction(
+              t.description,
+              value => updateTool(idx, 'description', value),
+              'Example: For this Agent, call these tools only after the user confirms the action.',
+            )}
           </div>
         ))}
       </Card>

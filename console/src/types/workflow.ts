@@ -74,6 +74,7 @@ export interface StepCreate {
   tool_config?: Record<string, unknown>;
   on_failure?: OnFailureStrategy;
   max_retries?: number;
+  fallback_step_id?: string | null;
   next_step_rules?: NextStepRule[];
   requires_human_confirm?: boolean;
   risk_level?: string;
