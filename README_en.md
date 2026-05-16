@@ -372,6 +372,11 @@ HLAB_SECRET_KEY=random-64-char-string        # JWT signing key
 | `HLAB_EMBEDDING_PROVIDER` | `local` | Embedding provider (`local` = sentence-transformers) |
 | `HLAB_EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding model (auto-downloads on first run) |
 | `HLAB_HF_ENDPOINT` | `https://hf-mirror.com` | HuggingFace mirror URL; switch to an internal mirror or official endpoint as needed |
+| `HLAB_ASR_PROVIDER` | `dashscope_qwen` | Speech-to-text provider: `dashscope_qwen`, `funasr_http`, `openai_compatible`, or `disabled` |
+| `HLAB_ASR_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Cloud ASR API or self-hosted FunASR HTTP endpoint |
+| `HLAB_ASR_MODEL` | `qwen3-asr-flash` | ASR model name; self-hosted services can use their own model value |
+| `HLAB_ASR_MAX_FILE_MB` | `10` | Max audio file size; self-hosted FunASR deployments can raise this |
+| `HLAB_ASR_CONFIG_PATH` | `./data/asr_config.json` | Path for console-managed ASR config; Docker deployments persist it in the data volume |
 | `HLAB_VECTOR_STORE` | `faiss` | Vector storage backend (`faiss` or `pgvector`) |
 | `HLAB_DISABLE_AUTH` | `true` | Disable API auth (MUST be false in production) |
 | `HLAB_AUDIT_ENABLED` | `true` | Enable audit logging |

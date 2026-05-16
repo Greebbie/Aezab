@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Button, Form, InputNumber, Switch, Space, message, Tag,
-  Descriptions, Spin, Row, Col, Divider,
+  Card, Button, Form, Input, InputNumber, Select, Switch, Space, message, Tag,
+  Descriptions, Spin, Row, Col, Divider, Upload,
 } from 'antd';
 import {
   ThunderboltOutlined, DashboardOutlined, SafetyCertificateOutlined,
-  CheckCircleOutlined, SettingOutlined,
+  AudioOutlined, CheckCircleOutlined, ExperimentOutlined, SettingOutlined, UploadOutlined,
 } from '@ant-design/icons';
-import { performanceApi, vectorAdminApi } from '../api';
+import { asrApi, performanceApi, vectorAdminApi } from '../api';
 
 interface PresetData {
   name: string;
@@ -36,6 +36,44 @@ const PRESET_COLORS: Record<string, string> = {
   accurate: '#722ed1',
 };
 
+const ASR_PROVIDER_OPTIONS = [
+  { label: 'DashScope Qwen ASR', value: 'dashscope_qwen' },
+  { label: 'OpenAI Compatible', value: 'openai_compatible' },
+  { label: 'Self-hosted FunASR HTTP', value: 'funasr_http' },
+  { label: 'Disabled', value: 'disabled' },
+];
+
+const ASR_PROVIDER_DEFAULTS: Record<string, Record<string, unknown>> = {
+  dashscope_qwen: {
+    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen3-asr-flash',
+    timeout: 60,
+    max_file_mb: 10,
+    funasr_path: '/transcribe',
+  },
+  openai_compatible: {
+    base_url: 'https://api.openai.com/v1',
+    model: 'gpt-4o-transcribe',
+    timeout: 60,
+    max_file_mb: 20,
+    funasr_path: '/transcribe',
+  },
+  funasr_http: {
+    base_url: 'http://host.docker.internal:10095',
+    model: 'paraformer-zh',
+    timeout: 60,
+    max_file_mb: 100,
+    funasr_path: '/transcribe',
+  },
+  disabled: {
+    base_url: '',
+    model: '',
+    timeout: 60,
+    max_file_mb: 10,
+    funasr_path: '/transcribe',
+  },
+};
+
 export default function SettingsPage() {
   const [presets, setPresets] = useState<Record<string, PresetData>>({});
   const [currentConfig, setCurrentConfig] = useState<Record<string, any>>({});
@@ -46,7 +84,14 @@ export default function SettingsPage() {
   const [modelStatus, setModelStatus] = useState<Record<string, any>>({});
   const [loadingModelStatus, setLoadingModelStatus] = useState(false);
   const [warmingModel, setWarmingModel] = useState(false);
+  const [asrStatus, setAsrStatus] = useState<Record<string, any>>({});
+  const [loadingAsrStatus, setLoadingAsrStatus] = useState(false);
+  const [savingAsrConfig, setSavingAsrConfig] = useState(false);
+  const [testingAsr, setTestingAsr] = useState(false);
+  const [asrTestResult, setAsrTestResult] = useState<Record<string, any> | null>(null);
   const [form] = Form.useForm();
+  const [asrForm] = Form.useForm();
+  const asrProvider = Form.useWatch('provider', asrForm);
 
   const loadPresets = async () => {
     setLoadingPresets(true);
@@ -77,6 +122,7 @@ export default function SettingsPage() {
     loadPresets();
     loadCurrentConfig();
     loadModelStatus();
+    loadAsrStatus();
   }, []);
 
   const loadModelStatus = async () => {
@@ -112,6 +158,103 @@ export default function SettingsPage() {
     } finally {
       setWarmingModel(false);
     }
+  };
+
+  const loadAsrStatus = async () => {
+    setLoadingAsrStatus(true);
+    try {
+      const res = await asrApi.getConfig();
+      setAsrStatus(res.data);
+      asrForm.setFieldsValue({
+        provider: res.data.provider,
+        base_url: res.data.base_url,
+        model: res.data.model,
+        timeout: res.data.timeout,
+        max_file_mb: res.data.max_file_mb,
+        funasr_path: res.data.funasr_path,
+        api_key: '',
+      });
+    } catch {
+      message.error('Failed to load ASR status');
+    } finally {
+      setLoadingAsrStatus(false);
+    }
+  };
+
+  const handleSaveAsrConfig = async () => {
+    setSavingAsrConfig(true);
+    try {
+      const values = await asrForm.validateFields();
+      const payload = { ...values };
+      if (!payload.api_key) delete payload.api_key;
+      const res = await asrApi.updateConfig(payload);
+      setAsrStatus(res.data);
+      asrForm.setFieldsValue({
+        ...res.data,
+        api_key: '',
+      });
+      message.success('ASR configuration saved');
+    } catch (err: any) {
+      if (err?.errorFields) {
+        setSavingAsrConfig(false);
+        return;
+      }
+      message.error('Failed to save ASR configuration: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      setSavingAsrConfig(false);
+    }
+  };
+
+  const handleRemoveSavedAsrKey = async () => {
+    setSavingAsrConfig(true);
+    try {
+      const res = await asrApi.updateConfig({
+        provider: asrStatus.provider,
+        base_url: asrStatus.base_url,
+        model: asrStatus.model,
+        timeout: asrStatus.timeout,
+        max_file_mb: asrStatus.max_file_mb,
+        funasr_path: asrStatus.funasr_path,
+        clear_api_key: true,
+      });
+      setAsrStatus(res.data);
+      asrForm.setFieldsValue({
+        ...res.data,
+        api_key: '',
+      });
+      message.success('Saved ASR API key removed');
+    } catch (err: any) {
+      message.error('Failed to remove saved ASR key: ' + (err?.response?.data?.detail || err.message));
+    } finally {
+      setSavingAsrConfig(false);
+    }
+  };
+
+  const applyAsrProviderDefaults = (provider: string) => {
+    const defaults = ASR_PROVIDER_DEFAULTS[provider];
+    if (!defaults) return;
+    asrForm.setFieldsValue({ provider, ...defaults });
+  };
+
+  const handleAsrProviderChange = (provider: string) => {
+    applyAsrProviderDefaults(provider);
+  };
+
+  const handleTestAsrUpload = async (file: File) => {
+    setTestingAsr(true);
+    setAsrTestResult(null);
+    try {
+      const res = await asrApi.transcribe(file);
+      setAsrTestResult(res.data);
+      message.success('ASR test passed');
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err.message || 'unknown error';
+      setAsrTestResult({ error: detail });
+      message.error('ASR test failed: ' + detail);
+    } finally {
+      setTestingAsr(false);
+    }
+    return Upload.LIST_IGNORE;
   };
 
   const handleApplyPreset = async (presetKey: string) => {
@@ -181,6 +324,141 @@ export default function SettingsPage() {
       </Card>
 
       {/* ── Preset Cards ─────────────────────────────────── */}
+      <Card
+        title={<Space><AudioOutlined />Voice Input / ASR Configuration</Space>}
+        extra={<Button onClick={loadAsrStatus} loading={loadingAsrStatus}>Refresh</Button>}
+        style={{ marginBottom: 24 }}
+      >
+        <Spin spinning={loadingAsrStatus}>
+          <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }} style={{ marginBottom: 16 }}>
+            <Descriptions.Item label="Status">
+              <Tag color={asrStatus.enabled ? 'green' : 'default'}>
+                {asrStatus.enabled ? 'Enabled' : 'Disabled'}
+              </Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="Current Provider">{asrStatus.provider || '-'}</Descriptions.Item>
+            <Descriptions.Item label="API Key">
+              <Tag color={asrStatus.has_api_key ? 'green' : 'orange'}>
+                {asrStatus.has_api_key ? 'Configured' : 'Missing'}
+              </Tag>
+              {asrStatus.uses_llm_api_key && <Tag color="blue">Using LLM key</Tag>}
+            </Descriptions.Item>
+            <Descriptions.Item label="Key Source">
+              <Tag color={asrStatus.api_key_source === 'saved_config' ? 'purple' : 'blue'}>
+                {asrStatus.api_key_source || 'missing'}
+              </Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="Saved Overrides">
+              <Tag color={asrStatus.has_saved_config ? 'blue' : 'default'}>
+                {asrStatus.has_saved_config ? 'Saved' : 'Environment defaults'}
+              </Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="Configuration File">{asrStatus.config_path || '-'}</Descriptions.Item>
+          </Descriptions>
+
+          <Form form={asrForm} layout="vertical">
+            <Row gutter={16}>
+              <Col xs={24} md={8}>
+                <Form.Item
+                  name="provider"
+                  label="ASR Provider"
+                  rules={[{ required: true, message: 'Select an ASR provider' }]}
+                >
+                  <Select options={ASR_PROVIDER_OPTIONS} onChange={handleAsrProviderChange} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item
+                  name="base_url"
+                  label="ASR Base URL"
+                  rules={[{ required: asrProvider !== 'disabled', message: 'ASR base URL is required' }]}
+                >
+                  <Input placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item
+                  name="model"
+                  label="ASR Model"
+                  rules={[{ required: asrProvider !== 'disabled', message: 'ASR model is required' }]}
+                >
+                  <Input placeholder="qwen3-asr-flash" />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Row gutter={16}>
+              <Col xs={24} md={8}>
+                <Form.Item name="api_key" label="ASR API Key">
+                  <Input.Password placeholder="Leave blank to keep current key" autoComplete="new-password" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item name="timeout" label="ASR Timeout (seconds)">
+                  <InputNumber min={5} max={300} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item name="max_file_mb" label="Max Audio File (MB)">
+                  <InputNumber min={1} max={200} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Row gutter={16}>
+              <Col xs={24} md={8}>
+                <Form.Item name="funasr_path" label="FunASR HTTP Path">
+                  <Input placeholder="/transcribe" />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Space>
+              <Button type="primary" onClick={handleSaveAsrConfig} loading={savingAsrConfig}>
+                Save ASR Configuration
+              </Button>
+              <Button onClick={() => applyAsrProviderDefaults(asrProvider)} disabled={!asrProvider}>
+                Apply Provider Defaults
+              </Button>
+              <Button
+                danger
+                onClick={handleRemoveSavedAsrKey}
+                loading={savingAsrConfig}
+                disabled={!asrStatus.has_saved_api_key}
+              >
+                Remove Saved API Key
+              </Button>
+              <Upload
+                accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.opus,.flac,.webm"
+                beforeUpload={handleTestAsrUpload}
+                showUploadList={false}
+                disabled={testingAsr || !asrStatus.enabled}
+              >
+                <Button icon={<UploadOutlined />} loading={testingAsr} disabled={testingAsr || !asrStatus.enabled}>
+                  Test ASR Upload
+                </Button>
+              </Upload>
+              <Button onClick={loadAsrStatus}>Reset to Current</Button>
+            </Space>
+
+            {asrTestResult && (
+              <Card size="small" style={{ marginTop: 16 }} title={<Space><ExperimentOutlined />ASR Test Result</Space>}>
+                {asrTestResult.error ? (
+                  <Tag color="red">{asrTestResult.error}</Tag>
+                ) : (
+                  <Descriptions size="small" column={1}>
+                    <Descriptions.Item label="Transcript">{asrTestResult.text || '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Provider">{asrTestResult.provider || '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Model">{asrTestResult.model || '-'}</Descriptions.Item>
+                    <Descriptions.Item label="Language">{asrTestResult.language || '-'}</Descriptions.Item>
+                  </Descriptions>
+                )}
+              </Card>
+            )}
+          </Form>
+        </Spin>
+      </Card>
+
       <Divider orientation="left">Presets</Divider>
       <Spin spinning={loadingPresets}>
         <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>

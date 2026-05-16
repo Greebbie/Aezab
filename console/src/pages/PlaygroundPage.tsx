@@ -7,6 +7,7 @@ import {
   InputNumber,
   List,
   message,
+  Modal,
   Select,
   Space,
   Spin,
@@ -17,6 +18,7 @@ import {
   Upload,
 } from 'antd';
 import {
+  AudioOutlined,
   CheckCircleOutlined,
   ClearOutlined,
   MenuFoldOutlined,
@@ -26,7 +28,7 @@ import {
   UploadOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { agentApi, invokeApi, auditApi } from '../api';
+import { agentApi, invokeApi, auditApi, asrApi } from '../api';
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
@@ -122,6 +124,10 @@ export default function PlaygroundPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [sending, setSending] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [voicePanelOpen, setVoicePanelOpen] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [useStreaming, setUseStreaming] = useState(true);
 
@@ -137,6 +143,10 @@ export default function PlaygroundPage() {
   /* refs */
   const chatEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingTimerRef = useRef<number | null>(null);
 
   /* ── Load agents on mount ──────────────────────────── */
 
@@ -164,6 +174,15 @@ export default function PlaygroundPage() {
     window.addEventListener('resize', onResize);
     onResize();
     return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current !== null) {
+        window.clearInterval(recordingTimerRef.current);
+      }
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
   }, []);
 
   /* ── Auto scroll ───────────────────────────────────── */
@@ -458,6 +477,112 @@ export default function PlaygroundPage() {
     if (!text) return;
     setInputValue('');
     await sendPayload(text);
+  };
+
+  const appendTranscript = (text: string) => {
+    setInputValue((prev) => (prev.trim() ? `${prev.trim()}\n${text}` : text));
+    setVoicePanelOpen(false);
+  };
+
+  const getErrorMessage = (err: any) => {
+    return err?.response?.data?.detail || err?.response?.data?.message || err?.message || 'unknown error';
+  };
+
+  const transcribeAudioFile = async (file: File) => {
+    setTranscribing(true);
+    try {
+      const res = await asrApi.transcribe(file);
+      const transcript = String(res.data?.text || '').trim();
+      if (!transcript) {
+        message.warning('No transcript returned from ASR');
+        return;
+      }
+      appendTranscript(transcript);
+      message.success('Audio transcribed');
+    } catch (err: any) {
+      message.error('Audio transcription failed: ' + getErrorMessage(err));
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
+  const handleAudioUpload = async (file: File) => {
+    await transcribeAudioFile(file);
+    return Upload.LIST_IGNORE;
+  };
+
+  const clearRecordingTimer = () => {
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  };
+
+  const stopRecordingStream = () => {
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+  };
+
+  const handleRecordedAudio = async (blob: Blob) => {
+    if (!blob.size) {
+      message.warning('No recorded audio captured');
+      return;
+    }
+    const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
+    await transcribeAudioFile(file);
+  };
+
+  const startRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      message.error('Browser recording is not available on this page');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      recordingChunksRef.current = [];
+      recordingStreamRef.current = stream;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordingChunksRef.current.push(event.data);
+      };
+
+      recorder.onstop = () => {
+        clearRecordingTimer();
+        setRecording(false);
+        setRecordingSeconds(0);
+        stopRecordingStream();
+        const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        recordingChunksRef.current = [];
+        void handleRecordedAudio(blob);
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = window.setInterval(() => {
+        setRecordingSeconds((seconds) => seconds + 1);
+      }, 1000);
+    } catch (err: any) {
+      stopRecordingStream();
+      message.error('Recording failed: ' + getErrorMessage(err));
+    }
+  };
+
+  const stopRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') return;
+    recorder.stop();
+  };
+
+  const formatRecordingTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+      .toString()
+      .padStart(2, '0');
+    const secs = (seconds % 60).toString().padStart(2, '0');
+    return `${mins}:${secs}`;
   };
 
   /* ── Workflow form submit ────────────────────────── */
@@ -971,6 +1096,14 @@ export default function PlaygroundPage() {
             alignItems: 'flex-end',
           }}
         >
+          <Tooltip title="Voice Input">
+            <Button
+              icon={<AudioOutlined />}
+              loading={transcribing}
+              disabled={sending || transcribing}
+              onClick={() => setVoicePanelOpen(true)}
+            />
+          </Tooltip>
           <TextArea
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
@@ -992,6 +1125,67 @@ export default function PlaygroundPage() {
             Send
           </Button>
         </div>
+
+        <Modal
+          title="Voice Input"
+          open={voicePanelOpen}
+          onCancel={() => {
+            if (recording) stopRecording();
+            setVoicePanelOpen(false);
+          }}
+          footer={null}
+          width={520}
+        >
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Upload.Dragger
+              accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.opus,.flac,.webm"
+              beforeUpload={handleAudioUpload}
+              showUploadList={false}
+              disabled={transcribing || recording}
+              multiple={false}
+              style={{ padding: 12 }}
+            >
+              <p className="ant-upload-drag-icon">
+                <UploadOutlined />
+              </p>
+              <p className="ant-upload-text">Upload Audio</p>
+              <p className="ant-upload-hint">WAV, MP3, M4A, AAC, OGG, OPUS, FLAC, WEBM</p>
+            </Upload.Dragger>
+
+            <div
+              style={{
+                border: '1px solid #f0f0f0',
+                borderRadius: 8,
+                padding: 16,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+              }}
+            >
+              <Space>
+                <AudioOutlined />
+                <Text strong>Record Audio</Text>
+                {recording && <Tag color="red">{formatRecordingTime(recordingSeconds)}</Tag>}
+              </Space>
+              <Button
+                type={recording ? 'default' : 'primary'}
+                danger={recording}
+                icon={<AudioOutlined />}
+                onClick={recording ? stopRecording : startRecording}
+                disabled={transcribing}
+              >
+                {recording ? 'Stop & Transcribe' : 'Start Recording'}
+              </Button>
+            </div>
+
+            {transcribing && (
+              <div style={{ textAlign: 'center', padding: '8px 0' }}>
+                <Spin size="small" /> <Text type="secondary">Transcribing...</Text>
+              </div>
+            )}
+          </Space>
+        </Modal>
       </div>
 
       {/* ── Trace / Citations Panel (Collapsible) ─────── */}

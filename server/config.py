@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024
     hf_endpoint: str = "https://hf-mirror.com"
 
+    # Speech-to-text / ASR
+    asr_provider: Literal["dashscope_qwen", "funasr_http", "openai_compatible", "disabled"] = "dashscope_qwen"
+    asr_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    asr_api_key: str = ""
+    asr_model: str = "qwen3-asr-flash"
+    asr_timeout: int = 60
+    asr_max_file_mb: int = 10
+    asr_funasr_path: str = "/transcribe"
+    asr_config_path: str = "./data/asr_config.json"
+
     # Vector Store
     vector_store: Literal["faiss", "pgvector", "milvus", "auto"] = "auto"
     faiss_index_dir: str = "./data/vectors"

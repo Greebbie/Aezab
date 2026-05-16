@@ -196,7 +196,7 @@ async def update_capabilities(
         else:
             skill = Skill(
                 name=f"[auto] {agent.name} - 工作流",
-                description=cap.description or f"Auto-managed workflow skill",
+                description=cap.description or "Auto-managed workflow skill",
                 skill_type="workflow",
                 execution_config=execution_config,
                 trigger_config=trigger_config or None,

@@ -126,6 +126,22 @@ export const invokeApi = {
   send: (data: InvokeRequest | Record<string, unknown>) => api.post<InvokeResponse>('/invoke', data),
 };
 
+export const asrApi = {
+  status: () => api.get('/asr/status'),
+  getConfig: () => api.get('/asr/config'),
+  updateConfig: (data: Record<string, unknown>) => api.put('/asr/config', data),
+  transcribe: (file: File, options?: { language?: string; prompt?: string }) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (options?.language) formData.append('language', options.language);
+    if (options?.prompt) formData.append('prompt', options.prompt);
+    return api.post('/asr/transcribe', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    });
+  },
+};
+
 // ── LLM Configs ─────────────────────────────────────
 export const llmConfigApi = {
   list: (tenantId = 'default') => api.get<LLMConfig[]>('/llm-configs/', { params: { tenant_id: tenantId } }),

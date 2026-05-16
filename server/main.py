@@ -18,6 +18,7 @@ from server.api.agent_capabilities import router as agent_capabilities_router
 from server.api.agent_connections import router as agent_connections_router
 from server.api.agent_skills import router as agent_skills_router
 from server.api.agents import router as agents_router
+from server.api.asr import router as asr_router
 from server.api.audit import router as audit_router
 from server.api.auth import router as auth_router
 from server.api.invoke import router as invoke_router
@@ -108,6 +109,7 @@ app.add_middleware(RequestIDMiddleware)
 prefix = settings.api_prefix
 
 app.include_router(invoke_router, prefix=prefix, tags=["invoke"])
+app.include_router(asr_router, prefix=prefix + "/asr", tags=["asr"])
 app.include_router(agents_router, prefix=prefix + "/agents", tags=["agents"])
 app.include_router(workflows_router, prefix=prefix + "/workflows", tags=["workflows"])
 app.include_router(knowledge_router, prefix=prefix + "/knowledge", tags=["knowledge"])

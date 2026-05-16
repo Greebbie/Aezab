@@ -332,6 +332,11 @@ HLAB_SECRET_KEY=随机64位字符串              # JWT 签名密钥
 | `HLAB_EMBEDDING_PROVIDER` | `local` | 嵌入模型来源（`local` = 本地 sentence-transformers） |
 | `HLAB_EMBEDDING_MODEL` | `BAAI/bge-m3` | 嵌入模型（首次运行自动下载） |
 | `HLAB_HF_ENDPOINT` | `https://hf-mirror.com` | HuggingFace 镜像，可按客户网络切换为内网镜像或官方源 |
+| `HLAB_ASR_PROVIDER` | `dashscope_qwen` | 语音转文字提供商：`dashscope_qwen`、`funasr_http`、`openai_compatible`、`disabled` |
+| `HLAB_ASR_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | ASR 云 API 或自部署 FunASR HTTP 地址 |
+| `HLAB_ASR_MODEL` | `qwen3-asr-flash` | ASR 模型名；自部署服务可按自己的模型名配置 |
+| `HLAB_ASR_MAX_FILE_MB` | `10` | 单个音频文件大小限制；自部署 FunASR 可按需要调高 |
+| `HLAB_ASR_CONFIG_PATH` | `./data/asr_config.json` | 控制台保存 ASR 配置的位置；Docker 部署会持久化到 data volume |
 | `HLAB_VECTOR_STORE` | `faiss` | 向量存储（`faiss` 或 `pgvector`） |
 | `HLAB_DISABLE_AUTH` | `true` | 关闭认证（生产必须设为 false） |
 | `HLAB_AUDIT_ENABLED` | `true` | 启用审计日志 |
