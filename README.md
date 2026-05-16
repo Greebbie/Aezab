@@ -27,6 +27,7 @@
 | **工具调用** | 注册外部 HTTP API，Agent 通过 Function Calling 自动调用 |
 | **多 Agent 协作** | Agent 之间可委派任务，内置深度限制和循环检测 |
 | **模型配置** | 统一管理多套 LLM 配置，每个 Agent 可独立选择模型，支持模板填充和连通性测试 |
+| **语音输入 / ASR** | 支持上传音频和浏览器录音，云 ASR 或自部署 FunASR 均可接入，控制台可保存配置并直接测试 |
 | **性能调优** | 三档预设（快速/均衡/精确），支持实时调参，无需重启 |
 | **审计追踪** | 每次对话的完整调用链：意图识别 → 知识检索 → 模型推理 → 工具调用，每步有耗时统计 |
 
@@ -36,6 +37,7 @@
 
 ### 环境要求
 
+- Docker 24+ 与 Docker Compose v2（推荐部署方式）
 - Python 3.10+
 - Node.js 18+（仅修改前端时需要）
 
@@ -46,7 +48,53 @@ git clone https://github.com/your-repo/headlessAIAgentPlatform.git
 cd headlessAIAgentPlatform
 ```
 
-### 2. 安装依赖
+### 2. 推荐：Docker Compose 部署
+
+Docker Compose 会构建后端和控制台，并启动 Redis、可选本地 Ollama、持久化数据卷。
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env`。如果使用 Compose 内置 Ollama，保留：
+
+```bash
+HLAB_LLM_PROVIDER=openai_compatible
+HLAB_LLM_BASE_URL=http://ollama:11434/v1
+HLAB_LLM_MODEL=qwen2.5
+```
+
+如果使用云模型，把 `HLAB_LLM_BASE_URL`、`HLAB_LLM_API_KEY`、`HLAB_LLM_MODEL` 改成对应供应商配置。语音输入默认使用 DashScope Qwen ASR，可填：
+
+```bash
+HLAB_ASR_PROVIDER=dashscope_qwen
+HLAB_ASR_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+HLAB_ASR_API_KEY=sk-你的阿里云百炼或 DashScope Key
+HLAB_ASR_MODEL=qwen3-asr-flash
+```
+
+启动：
+
+```bash
+docker compose up -d --build server
+docker compose logs -f server
+```
+
+检查服务：
+
+```bash
+curl http://localhost:8000/health
+```
+
+访问控制台：`http://localhost:8000`
+
+持久化位置：
+
+- 应用数据、SQLite、知识库上传、ASR 控制台保存配置：Docker volume `hlab-data`
+- 本地嵌入模型缓存：Docker volume `hlab-model-cache`
+- 本地 Ollama 模型：Docker volume `ollama-models`
+
+### 3. 本地源码部署：安装依赖
 
 ```bash
 python3 -m venv venv
@@ -56,7 +104,7 @@ pip install -e ".[rag]"           # 安装后端 + RAG 依赖（FAISS、jieba、
 
 > **Apple Silicon**：如果 `faiss-cpu` 安装失败，试试 `pip install faiss-cpu --no-cache-dir`
 
-### 3. 配置环境变量
+### 4. 本地源码部署：配置环境变量
 
 ```bash
 cp .env.example .env
@@ -85,7 +133,7 @@ HLAB_LLM_MODEL=MiniMax-M2.7
 
 > **说明**：`.env` 里的配置是启动时的兜底默认值。服务运行后，可以在控制台「模型配置」页面创建多套 LLM 配置，然后在「智能体」页面为每个 Agent 单独选择。优先级：Agent 绑定配置 > 租户默认配置 > `.env` 兜底值。
 
-### 4. 启动服务
+### 5. 本地源码部署：启动服务
 
 ```bash
 HLAB_DISABLE_AUTH=true python -m uvicorn server.main:app --host 0.0.0.0 --port 8000
@@ -95,7 +143,7 @@ HLAB_DISABLE_AUTH=true python -m uvicorn server.main:app --host 0.0.0.0 --port 8
 
 > 嵌入模型（bge-m3, ~2.3GB）会在首次使用或设置页预热时下载。默认使用 `hf-mirror.com` 镜像源；实际可用性仍取决于客户网络和防火墙策略。
 
-### 5. 打开控制台
+### 6. 打开控制台
 
 浏览器访问 `http://localhost:8000`
 
@@ -118,11 +166,29 @@ cp -r dist/ ../static/            # 复制到 static/ 供后端托管
 
 可以创建多套配置（如一个便宜的 qwen-flash 用于日常对话，一个 qwen-max 用于复杂问题）。
 
-### 第二步：创建智能体
+### 第二步：配置语音输入（可选）
+
+进入「系统设置」→ Voice Input / ASR Configuration：
+
+- 选择 ASR Provider：DashScope Qwen ASR、OpenAI Compatible、自部署 FunASR HTTP 或 Disabled
+- 点击 Apply Provider Defaults 可自动填入常用 Base URL、模型名、超时和文件大小限制
+- 填入 ASR API Key，点击 Save ASR Configuration 保存
+- 点击 Test ASR Upload 上传一段音频，直接验证转写结果
+
+保存后的覆盖配置位于 `data/asr_config.json`；Docker 部署时该文件在 `hlab-data` volume 中持久化。页面会显示 Key Source：
+
+- `environment`：使用 `.env` 里的 `HLAB_ASR_API_KEY`
+- `saved_config`：使用控制台保存的 API Key
+- `llm_config`：ASR 与 LLM 使用同一 Base URL 时复用 LLM Key
+- `missing`：当前没有可用 Key
+
+Playground 输入框左侧的语音按钮支持上传音频和浏览器录音，转写成功后会自动回填到消息输入框。
+
+### 第三步：创建智能体
 
 进入「智能体」→ 点击 Create Agent → 填写名称和系统提示词 → 选择语言模型 → 完成创建。
 
-### 第三步：添加知识库（可选）
+### 第四步：添加知识库（可选）
 
 进入「知识库」→ 创建知识源 → 上传文档（TXT / PDF / DOCX / Excel / CSV）。
 
@@ -132,19 +198,19 @@ cp -r dist/ ../static/            # 复制到 static/ 供后端托管
 
 > **域隔离**：不同域（domain）的知识完全隔离，绑定 "hr" 域的 Agent 不会返回 "sales" 域的数据。
 
-### 第四步：创建工作流（可选）
+### 第五步：创建工作流（可选）
 
 进入「工作流」→ 创建流程 → 定义步骤（信息收集 → 确认 → 完成）。
 
 绑定到 Agent 后，当用户说"我要报修"时，Agent 会自动启动报修工作流引导用户逐步填写。
 
-### 第五步：注册工具（可选）
+### 第六步：注册工具（可选）
 
 进入「工具」→ 注册外部 HTTP API（填 URL、Method、参数 Schema）→ 测试连通。
 
 绑定到 Agent 后，Agent 会在对话中通过 Function Calling 自动调用工具。
 
-### 第六步：测试对话
+### 第七步：测试对话
 
 进入「测试场」→ 选择 Agent → 开始对话。
 
@@ -236,7 +302,7 @@ headlessAIAgentPlatform/
 | **知识库** | 上传文档、管理知识源、添加 KV 实体、查看分块详情、测试检索效果 |
 | **工具** | 注册外部 HTTP API，配置参数 Schema，测试连通性 |
 | **模型配置** | 管理 LLM 供应商，支持模板一键填充和连接测试 |
-| **系统设置** | 性能预设切换（快速/均衡/精确）+ 高级参数微调 |
+| **系统设置** | 性能预设、Embedding 模型预热、ASR 语音输入配置、上传测试和高级参数微调 |
 | **审计日志** | 完整调用链回放，每步事件类型、耗时、输入输出 |
 | **系统健康** | 数据库、向量索引、熔断器组件状态监控 |
 
@@ -255,6 +321,22 @@ headlessAIAgentPlatform/
 | **vLLM** | `openai_compatible` | 任意模型 | 自建推理服务 |
 
 所有使用 OpenAI 兼容 API 格式的供应商均可通过 `openai_compatible` 接入。
+
+---
+
+## 语音输入 / ASR
+
+| 方案 | Provider | 适用场景 |
+|------|----------|----------|
+| DashScope Qwen ASR | `dashscope_qwen` | 国内云 API 默认方案，适合快速开箱 |
+| OpenAI 兼容 ASR | `openai_compatible` | 使用兼容 `/chat/completions` 音频输入的云服务 |
+| 自部署 FunASR HTTP | `funasr_http` | 客户已有本地 ASR 服务或内网部署模型 |
+| 关闭语音 | `disabled` | 不需要语音输入时关闭 |
+
+控制台路径：「系统设置」→ Voice Input / ASR Configuration。配置保存后立即生效，无需重启。Playground 的语音按钮支持两种输入：
+
+- 上传音频文件：WAV、MP3、M4A、AAC、OGG、OPUS、FLAC、WEBM
+- 浏览器录音：开始录音 → 停止并转写 → 自动填入消息框
 
 ---
 
@@ -303,6 +385,13 @@ curl -X POST http://localhost:8000/api/v1/knowledge/upload \
   -F "file=@产品手册.pdf" -F "source_id=知识源ID" \
   -F "domain=docs" -F "chunk_size=500"
 
+# 查看 ASR 配置状态
+curl http://localhost:8000/api/v1/asr/config
+
+# 上传音频并转写
+curl -X POST http://localhost:8000/api/v1/asr/transcribe \
+  -F "file=@voice.wav"
+
 # 健康检查
 curl http://localhost:8000/health
 ```
@@ -334,9 +423,12 @@ HLAB_SECRET_KEY=随机64位字符串              # JWT 签名密钥
 | `HLAB_HF_ENDPOINT` | `https://hf-mirror.com` | HuggingFace 镜像，可按客户网络切换为内网镜像或官方源 |
 | `HLAB_ASR_PROVIDER` | `dashscope_qwen` | 语音转文字提供商：`dashscope_qwen`、`funasr_http`、`openai_compatible`、`disabled` |
 | `HLAB_ASR_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | ASR 云 API 或自部署 FunASR HTTP 地址 |
+| `HLAB_ASR_API_KEY` | （空） | ASR API Key；控制台保存的 key 会覆盖该环境变量 |
 | `HLAB_ASR_MODEL` | `qwen3-asr-flash` | ASR 模型名；自部署服务可按自己的模型名配置 |
+| `HLAB_ASR_TIMEOUT` | `60` | ASR 转写超时（秒） |
 | `HLAB_ASR_MAX_FILE_MB` | `10` | 单个音频文件大小限制；自部署 FunASR 可按需要调高 |
 | `HLAB_ASR_CONFIG_PATH` | `./data/asr_config.json` | 控制台保存 ASR 配置的位置；Docker 部署会持久化到 data volume |
+| `HLAB_ASR_FUNASR_PATH` | `/transcribe` | 自部署 FunASR HTTP 服务的转写路径 |
 | `HLAB_VECTOR_STORE` | `faiss` | 向量存储（`faiss` 或 `pgvector`） |
 | `HLAB_DISABLE_AUTH` | `true` | 关闭认证（生产必须设为 false） |
 | `HLAB_AUDIT_ENABLED` | `true` | 启用审计日志 |

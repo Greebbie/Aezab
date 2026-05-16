@@ -18,6 +18,7 @@ A privately deployable AI Agent platform with a web management console. Visually
 | **Tool Calling** | Register external HTTP APIs as tools; agents invoke them automatically via Function Calling |
 | **Multi-Agent Collaboration** | Agents can delegate tasks to each other with built-in depth limits (max 3) and cycle detection |
 | **LLM Config Management** | Manage multiple LLM provider configs, assign per-agent, with one-click template loading and connectivity testing |
+| **Voice Input / ASR** | Upload audio or record in the browser; connect cloud ASR or self-hosted FunASR with console-managed config and direct testing |
 | **Web Console** | 10-page React management interface covering all features with visual operations |
 | **Headless API** | All features accessible via REST API + SSE streaming, 70+ endpoints |
 | **i18n** | Full Chinese + English interface with browser auto-detection |
@@ -28,6 +29,7 @@ A privately deployable AI Agent platform with a web management console. Visually
 
 ### Requirements
 
+- **Docker 24+ and Docker Compose v2** (recommended deployment path)
 - **Python 3.10+**
 - **Node.js 18+** (only needed if modifying frontend or building from source)
 
@@ -38,7 +40,53 @@ git clone https://github.com/your-repo/headlessAIAgentPlatform.git
 cd headlessAIAgentPlatform
 ```
 
-### Step 2: Create virtual environment and install dependencies
+### Step 2: Recommended Docker Compose deployment
+
+Docker Compose builds the backend and console, then starts Redis, optional local Ollama, and persistent data volumes.
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`. For the bundled Ollama service, keep:
+
+```bash
+HLAB_LLM_PROVIDER=openai_compatible
+HLAB_LLM_BASE_URL=http://ollama:11434/v1
+HLAB_LLM_MODEL=qwen2.5
+```
+
+For a cloud LLM, set `HLAB_LLM_BASE_URL`, `HLAB_LLM_API_KEY`, and `HLAB_LLM_MODEL` to your provider values. Voice input defaults to DashScope Qwen ASR and can be configured with:
+
+```bash
+HLAB_ASR_PROVIDER=dashscope_qwen
+HLAB_ASR_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+HLAB_ASR_API_KEY=sk-your-dashscope-key
+HLAB_ASR_MODEL=qwen3-asr-flash
+```
+
+Start:
+
+```bash
+docker compose up -d --build server
+docker compose logs -f server
+```
+
+Check health:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Open the console at `http://localhost:8000`.
+
+Persistent storage:
+
+- App data, SQLite, uploads, and console-managed ASR config: Docker volume `hlab-data`
+- Local embedding model cache: Docker volume `hlab-model-cache`
+- Local Ollama models: Docker volume `ollama-models`
+
+### Step 3: Source-code deployment - install dependencies
 
 ```bash
 python3 -m venv venv
@@ -50,7 +98,7 @@ Dependencies are managed via `pyproject.toml`. The `[rag]` optional group includ
 
 > **Apple Silicon users**: If `faiss-cpu` fails to install, try `pip install faiss-cpu --no-cache-dir`.
 
-### Step 3: Configure environment variables
+### Step 4: Source-code deployment - configure environment variables
 
 ```bash
 cp .env.example .env
@@ -81,7 +129,7 @@ HLAB_LLM_MODEL=gpt-4o
 >
 > Priority: Agent-bound config > Tenant default config > `.env` fallback.
 
-### Step 4: Start the server
+### Step 5: Source-code deployment - start the server
 
 ```bash
 source venv/bin/activate
@@ -90,7 +138,7 @@ HLAB_DISABLE_AUTH=true python -m uvicorn server.main:app --host 0.0.0.0 --port 8
 
 The server auto-creates the SQLite database and all tables on first start. No manual migration needed.
 
-### Step 5: Open the console
+### Step 6: Open the console
 
 **Production mode** (requires frontend build):
 
@@ -124,7 +172,25 @@ Go to **LLM Configs** page -> Click "Create Config" -> Select provider (e.g. Das
 
 You can create multiple configs (e.g. a cheap qwen-flash for daily use, a powerful qwen-max for complex scenarios) and set one as default.
 
-### 2. Create Agent
+### 2. Configure Voice Input (optional)
+
+Go to **Settings -> Voice Input / ASR Configuration**:
+
+- Select an ASR Provider: DashScope Qwen ASR, OpenAI Compatible, self-hosted FunASR HTTP, or Disabled
+- Click **Apply Provider Defaults** to auto-fill common base URL, model, timeout, and file size values
+- Enter the ASR API Key and click **Save ASR Configuration**
+- Click **Test ASR Upload** to upload an audio file and verify transcription directly from Settings
+
+Saved overrides are stored in `data/asr_config.json`; Docker deployments persist this file in the `hlab-data` volume. The page shows Key Source:
+
+- `environment`: using `HLAB_ASR_API_KEY` from `.env`
+- `saved_config`: using the API key saved from the console
+- `llm_config`: reusing the LLM key when ASR and LLM share the same base URL
+- `missing`: no available key
+
+The voice button in Playground supports audio upload and browser recording. Successful transcription is automatically inserted into the message input.
+
+### 3. Create Agent
 
 Go to **Agents** page -> Click "Create Agent" ->
 
@@ -132,7 +198,7 @@ Go to **Agents** page -> Click "Create Agent" ->
 - **Capabilities** tab: Configure agent capabilities (knowledge base, workflows, tools, delegation)
 - **Advanced** tab: Response format, risk control settings
 
-### 3. Add Knowledge Base (optional)
+### 4. Add Knowledge Base (optional)
 
 Go to **Knowledge** page -> Create a knowledge source -> Upload documents (TXT / PDF / DOCX / Excel / CSV) -> System auto-chunks and vectorizes.
 
@@ -142,19 +208,19 @@ Bind the knowledge domain in the Agent's Capabilities tab, and the agent can aut
 
 > **Domain isolation**: Different domains are completely isolated. An agent bound to the "hr" domain will never return results from the "sales" domain.
 
-### 4. Create Workflow (optional)
+### 5. Create Workflow (optional)
 
 Go to **Workflows** page -> Create workflow -> Define steps (collect info, confirm, complete, etc.) -> Each step can have field types, validation rules, file upload, and LLM-assisted validation.
 
 Bind the workflow in the Agent's Capabilities tab. The agent will auto-trigger it based on user intent (e.g. when user says "I need to submit a repair request").
 
-### 5. Register Tools (optional)
+### 6. Register Tools (optional)
 
 Go to **Tools** page -> Register an external HTTP API (fill in URL, Method, parameter Schema) -> Test connectivity.
 
 Bind tools in the Agent's Capabilities tab. The agent will call them via Function Calling during conversations.
 
-### 6. Test Conversation
+### 7. Test Conversation
 
 Go to **Playground** page -> Select an agent -> Start chatting. The right panel shows real-time Function Calling traces, retrieval results, latency breakdown, and citations.
 
@@ -225,6 +291,7 @@ headlessAIAgentPlatform/
 |   |   +-- workflows.py           #   Workflow management
 |   |   +-- tools.py               #   Tool management
 |   |   +-- llm_configs.py         #   LLM config + provider templates + test
+|   |   +-- asr.py                 #   Voice transcription config + upload API
 |   |   +-- performance.py         #   Performance presets + runtime config
 |   |   +-- audit.py               #   Audit logs
 |   |   +-- vector_admin.py        #   Vector index management
@@ -232,6 +299,7 @@ headlessAIAgentPlatform/
 |   |   +-- agent_runtime.py       #   Agent pipeline: intent + pre-retrieval + function calling
 |   |   +-- knowledge_retriever.py #   3-channel hybrid retrieval + RRF + cross-encoder reranker
 |   |   +-- llm_adapter.py         #   Multi-provider LLM adapter + function calling
+|   |   +-- asr.py                 #   Cloud ASR + self-hosted FunASR provider layer
 |   |   +-- workflow_executor.py   #   Workflow executor (validation + file upload + LLM validation)
 |   |   +-- tool_executor.py       #   Tool executor + exponential backoff retry
 |   |   +-- vector_store.py        #   FAISS HNSW vector index + embedding model cascade fallback
@@ -262,7 +330,7 @@ headlessAIAgentPlatform/
 | **Knowledge** | Upload documents (TXT/PDF/DOCX/Excel/CSV), manage sources, add KV entities, view chunks, test retrieval |
 | **Tools** | Register external HTTP APIs as tools, configure parameter schemas, test connectivity |
 | **LLM Configs** | Manage LLM provider configs with one-click templates (Ollama/DashScope/OpenAI/vLLM/ZhipuAI) and connection testing |
-| **Settings** | Performance preset switching (Fast/Balanced/Accurate) and advanced parameter tuning |
+| **Settings** | Performance presets, embedding warmup/download, ASR voice input configuration, upload testing, and advanced tuning |
 | **Audit** | Full call chain replay with event types, timing, and input/output for each step |
 
 ---
@@ -280,6 +348,22 @@ headlessAIAgentPlatform/
 | **DeepSeek** | `openai_compatible` | deepseek-chat, deepseek-coder | via api.deepseek.com |
 
 Any provider using the OpenAI-compatible API format can be connected via `openai_compatible`.
+
+---
+
+## Voice Input / ASR
+
+| Option | Provider | Use Case |
+|--------|----------|----------|
+| DashScope Qwen ASR | `dashscope_qwen` | Default China-friendly cloud API for quick setup |
+| OpenAI-compatible ASR | `openai_compatible` | Cloud services that support audio input through `/chat/completions` |
+| Self-hosted FunASR HTTP | `funasr_http` | Existing local or intranet ASR service |
+| Disabled | `disabled` | Turn off voice input |
+
+Console path: **Settings -> Voice Input / ASR Configuration**. Saved changes take effect immediately without restart. Playground voice input supports:
+
+- Audio file upload: WAV, MP3, M4A, AAC, OGG, OPUS, FLAC, WEBM
+- Browser recording: start recording -> stop and transcribe -> auto-fill the chat input
 
 ---
 
@@ -340,6 +424,17 @@ curl -X POST http://localhost:8000/api/v1/knowledge/upload \
 
 Supports `.txt`, `.pdf`, `.docx`, `.xlsx`, `.csv`. Auto recursive chunking (paragraph -> line -> sentence -> character) and vectorization.
 
+### ASR Transcription
+
+```bash
+# Check ASR config and key source
+curl http://localhost:8000/api/v1/asr/config
+
+# Upload audio and transcribe
+curl -X POST http://localhost:8000/api/v1/asr/transcribe \
+  -F "file=@voice.wav"
+```
+
 ### Health Check
 
 ```bash
@@ -374,9 +469,12 @@ HLAB_SECRET_KEY=random-64-char-string        # JWT signing key
 | `HLAB_HF_ENDPOINT` | `https://hf-mirror.com` | HuggingFace mirror URL; switch to an internal mirror or official endpoint as needed |
 | `HLAB_ASR_PROVIDER` | `dashscope_qwen` | Speech-to-text provider: `dashscope_qwen`, `funasr_http`, `openai_compatible`, or `disabled` |
 | `HLAB_ASR_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Cloud ASR API or self-hosted FunASR HTTP endpoint |
+| `HLAB_ASR_API_KEY` | (empty) | ASR API key; console-saved key overrides this environment value |
 | `HLAB_ASR_MODEL` | `qwen3-asr-flash` | ASR model name; self-hosted services can use their own model value |
+| `HLAB_ASR_TIMEOUT` | `60` | ASR transcription timeout in seconds |
 | `HLAB_ASR_MAX_FILE_MB` | `10` | Max audio file size; self-hosted FunASR deployments can raise this |
 | `HLAB_ASR_CONFIG_PATH` | `./data/asr_config.json` | Path for console-managed ASR config; Docker deployments persist it in the data volume |
+| `HLAB_ASR_FUNASR_PATH` | `/transcribe` | Transcription path for self-hosted FunASR HTTP services |
 | `HLAB_VECTOR_STORE` | `faiss` | Vector storage backend (`faiss` or `pgvector`) |
 | `HLAB_DISABLE_AUTH` | `true` | Disable API auth (MUST be false in production) |
 | `HLAB_AUDIT_ENABLED` | `true` | Enable audit logging |

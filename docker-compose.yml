@@ -5,9 +5,9 @@ services:
       - "8000:8000"
     env_file: .env
     environment:
-      - HLAB_DATABASE_URL=sqlite+aiosqlite:///./data/hlab.db
-      - HLAB_REDIS_URL=redis://redis:6379/0
-      - HLAB_LLM_BASE_URL=http://ollama:11434/v1
+      - HLAB_DATABASE_URL=${HLAB_DATABASE_URL:-sqlite+aiosqlite:///./data/hlab.db}
+      - HLAB_REDIS_URL=${HLAB_REDIS_URL:-redis://redis:6379/0}
+      - HLAB_LLM_BASE_URL=${HLAB_LLM_BASE_URL:-http://ollama:11434/v1}
       - HLAB_HF_ENDPOINT=${HLAB_HF_ENDPOINT:-https://hf-mirror.com}
       - HF_ENDPOINT=${HLAB_HF_ENDPOINT:-https://hf-mirror.com}
     volumes:
