@@ -83,8 +83,6 @@ Default services:
 | `aezab-model-cache` | Local embedding model cache. |
 | `ollama-models` | Ollama model data. |
 
-> Compatibility note: `AEZAB_` is the primary environment-variable prefix. The backend still accepts legacy `HLAB_` variables, so existing deployments do not need to update `.env` immediately.
-
 ## Model Configuration
 
 Aezab requires at least one working LLM. Set a default model in `.env`, or manage multiple model configs from the console.
