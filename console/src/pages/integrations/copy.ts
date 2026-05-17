@@ -3,6 +3,7 @@ export type IntegrationCopy = ReturnType<typeof getIntegrationCopy>;
 export function getIntegrationCopy(isZh: boolean) {
   if (isZh) {
     return {
+      eyebrow: '开发者接入',
       title: '接入中心',
       subtitle: '集中查看并联调客户应用、语音输入、外部工具、工作流 webhook 和审计 trace。',
       integrationMap: '集成地图',
@@ -15,11 +16,31 @@ export function getIntegrationCopy(isZh: boolean) {
       },
       bindingNote:
         '这里是开发联调快捷入口。绑定会保存到 Agent Capabilities；后续增删知识、工作流、工具时，仍可回到 Agent Management 统一管理。',
+      customerAppFlow: {
+        title: '客户 App 接入流程',
+        description:
+          '客户 App 不需要使用 Aezab Playground；它只需要消费 invoke 返回值，并按 workflow_card 渲染自己的表单。',
+        steps: [
+          '客户 App 把用户消息发送到 /invoke。',
+          '如果返回 short_answer，直接展示给用户。',
+          '如果返回 workflow_card.fields，按字段类型渲染 App 自己的表单。',
+          '用户提交后，用同一个 session_id + form_data 再调用 /invoke。',
+          '流程完成后，读取 workflow_card.collected_data 展示结果，或等待 webhook 回写客户系统。',
+          '出问题时，用 trace_id 到 Audit 回放调用链。',
+        ],
+        workflowCardTitle: 'workflow_card 渲染约定',
+        formSubmitTitle: 'session_id + form_data 继续流程',
+      },
+      sectionTitles: {
+        liveInvokeTest: '在线调用测试',
+        clientSnippets: '客户端接入示例',
+        responseContract: '响应结构约定',
+      },
       tabs: {
-        inbound: 'Inbound API',
-        outbound: 'Outbound Tools',
-        webhooks: 'Workflow Webhooks',
-        traces: 'Trace & Debug',
+        inbound: '入站 API',
+        outbound: '出站工具',
+        webhooks: '工作流 Webhook',
+        traces: 'Trace 调试',
       },
       categoryHelp: {
         inbound: {
@@ -49,8 +70,8 @@ export function getIntegrationCopy(isZh: boolean) {
         copied: '已复制',
         copyFailed: '复制失败',
         sendTest: '发送测试',
-        connectExternalApi: 'Connect External API',
-        configureWebhook: 'Configure Workflow Webhook',
+        connectExternalApi: '接入外部 API',
+        configureWebhook: '配置工作流 Webhook',
         bindToolToAgent: '绑定 Agent',
         saveBinding: '保存绑定',
         testTool: '测试工具',
@@ -85,6 +106,11 @@ export function getIntegrationCopy(isZh: boolean) {
         latency: '延迟',
         status: '状态',
       },
+      fieldHelp: {
+        apiBase: '客户系统调用 Aezab 后端时使用的基础地址。部署到云上后应替换成客户自己的域名。',
+        auth: '生产环境建议开启 API Key 或 Bearer Token。外部系统调用 invoke、ASR、工具测试接口时都应携带鉴权。',
+        swagger: '/docs 是 FastAPI 自动生成的接口文档，适合开发人员查看完整请求参数和响应结构。',
+      },
       empty: {
         noAgent: '请先创建 Agent',
         noTools: '还没有注册工具',
@@ -109,6 +135,7 @@ export function getIntegrationCopy(isZh: boolean) {
   }
 
   return {
+    eyebrow: 'Developer Interface',
     title: 'Integrations',
     subtitle: 'Connect and test customer apps, voice input, outbound tools, workflow webhooks, and audit traces.',
     integrationMap: 'Integration map',
@@ -121,6 +148,26 @@ export function getIntegrationCopy(isZh: boolean) {
     },
     bindingNote:
       'This is a developer shortcut. Bindings are saved into Agent Capabilities; use Agent Management later to review, remove, or reorganize knowledge, workflows, and tools.',
+    customerAppFlow: {
+      title: 'Customer App Integration Flow',
+      description:
+        'Customer apps do not need the Aezab Playground. They call invoke, render workflow cards in their own UI, and submit form_data with the same session.',
+      steps: [
+        'The customer app sends the user message to /invoke.',
+        'If the response has short_answer, show it directly.',
+        'If the response has workflow_card.fields, render the app form from those field definitions.',
+        'When the user submits, call /invoke again with the same session_id + form_data.',
+        'When completed, show workflow_card.collected_data or let the workflow webhook update the customer backend.',
+        'Use trace_id in Audit when debugging the integration.',
+      ],
+      workflowCardTitle: 'workflow_card rendering contract',
+      formSubmitTitle: 'Continue with session_id + form_data',
+    },
+    sectionTitles: {
+      liveInvokeTest: 'Live Invoke Test',
+      clientSnippets: 'Generated Client Snippets',
+      responseContract: 'Response Contract',
+    },
     tabs: {
       inbound: 'Inbound API',
       outbound: 'Outbound Tools',
@@ -190,6 +237,11 @@ export function getIntegrationCopy(isZh: boolean) {
       eventType: 'Event',
       latency: 'Latency',
       status: 'Status',
+    },
+    fieldHelp: {
+      apiBase: 'Base URL customer systems use to call the Aezab backend. In production this should be your deployed domain.',
+      auth: 'Use API Key or Bearer Token in production. External invoke, ASR, and tool test calls should all be authenticated.',
+      swagger: '/docs is the FastAPI-generated API reference for developers who need full request and response schemas.',
     },
     empty: {
       noAgent: 'Create an agent first',

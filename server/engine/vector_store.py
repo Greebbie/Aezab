@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
+import sys
 import threading
 from typing import Any
 
@@ -37,6 +39,19 @@ _LOCAL_EMBEDDING_FALLBACKS = [
 ]
 
 _BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+
+
+def _local_embedding_runtime_supported() -> bool:
+    """Return whether local sentence-transformers is safe in this runtime.
+
+    Python 3.13 on Windows currently has native dependency combinations
+    (notably pandas/pyarrow pulled in through sklearn) that can terminate the
+    process with an access violation during import. Local embeddings are an
+    optional acceleration path, so fail closed here instead of risking the
+    FastAPI worker. API embeddings remain available through the configured
+    provider.
+    """
+    return not (platform.system() == "Windows" and sys.version_info >= (3, 13))
 
 
 def configure_huggingface_endpoint() -> None:
@@ -144,6 +159,15 @@ class EmbeddingModel:
 
     def _load_local(self) -> bool:
         """Try loading local sentence-transformers models in cascade order."""
+        if not _local_embedding_runtime_supported():
+            logger.warning(
+                "Local sentence-transformers embedding is disabled on Windows "
+                "Python 3.13+ to avoid native dependency access violations. "
+                "Set AEZAB_EMBEDDING_PROVIDER=dashscope or openai_compatible "
+                "to enable vector search with an API embedding provider."
+            )
+            return False
+
         configure_huggingface_endpoint()
         try:
             from sentence_transformers import SentenceTransformer

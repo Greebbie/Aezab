@@ -29,7 +29,7 @@ Aezab provides two integration surfaces: a console for configuration and testing
 | Area | Capabilities |
 | --- | --- |
 | Agent Management | Multiple agents, model selection, capability binding, agent delegation. |
-| Knowledge / RAG | TXT, PDF, DOCX, Excel, CSV upload; BM25, vector search, RRF fusion, optional reranking. |
+| Knowledge / RAG | TXT, PDF, DOCX, XLSX, CSV upload; BM25, vector search, RRF fusion, optional reranking. |
 | Workflow Engine | Sequential steps, field collection, file upload, LLM validation, failure handling, completion callbacks. |
 | Tool Calling | HTTP tool registration, parameter schema, auth config, timeout, retry, connectivity test. |
 | Voice / ASR | Browser recording, audio upload, DashScope/OpenAI-compatible ASR, self-hosted FunASR HTTP. |
@@ -146,6 +146,22 @@ Aezab uses a conversation-first runtime. Bound capabilities are converted into f
 | Agent delegation | Agent connection settings and target agent description. |
 
 If triggering is unstable, adjust the capability name, description, and schema first. Agent-specific instructions are useful as additional constraints, not as the primary trigger system.
+
+## Knowledge Upload Standard
+
+Uploaded files are parsed into text, recursively split by `chunk_size` and `chunk_overlap`, then indexed for BM25, vector search, and fast lookup. DOCX, CSV, and XLSX all go through the same chunking pipeline after extraction. The default single-file limit is `AEZAB_KNOWLEDGE_MAX_UPLOAD_MB=50`.
+
+| Format | Recommended standard |
+| --- | --- |
+| TXT / MD | Use UTF-8, GB18030, or UTF-16. Keep one knowledge point per paragraph. FAQ content can use `Question: ... Answer: ...`. |
+| DOCX | Use real text, not scanned images. Headings, paragraphs, and tables are extracted. Move complex layouts, text boxes, and footnotes into normal body sections when possible. |
+| CSV | Prefer a header row. UTF-8, UTF-8 BOM, and GB18030 are supported. Common delimiters include comma, semicolon, tab, and pipe. |
+| XLSX | Each sheet is parsed separately. Prefer a header row. Formulas are read from their current calculated values. Flatten merged cells and pivot-style sheets before upload. |
+| PDF | Text PDFs are supported. Scanned PDFs should be OCR-processed into text, DOCX, or TXT first. |
+
+Tables are converted into retrieval-oriented field text, for example `Item: Repair phone | Value: 0571-88001234`. This works better than raw cell concatenation for support QA, policies, and form-like knowledge. Before publishing an agent, verify recall in **Knowledge -> Retrieval Test** and final behavior in **Playground**.
+
+Avoid uploading scanned images, encrypted PDFs, pivot-style spreadsheets, embedded attachments, or text that only exists inside images. OCR or flatten those files into DOCX, TXT, or CSV first for more stable retrieval.
 
 ## Integration Model
 

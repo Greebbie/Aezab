@@ -358,15 +358,18 @@ class WorkflowExecutor:
         """Ask user to confirm before proceeding."""
         text = user_input.strip().lower()
 
-        # Check for negative/cancel keywords first (contains match)
-        negative = {"取消", "不", "不是", "不对", "不行", "重新", "修改", "n", "no", "cancel"}
-        if any(kw in text for kw in negative):
+        # Check for negative/cancel keywords first. Single-letter choices must
+        # be exact matches; otherwise "confirm" contains "n" and rolls back.
+        negative_exact = {"不", "n", "no"}
+        negative_contains = {"取消", "不是", "不对", "不行", "重新", "修改", "cancel"}
+        if text in negative_exact or any(kw in text for kw in negative_contains):
             # Roll back to previous collect step
             return self._perform_rollback(session, steps, current_step_index=idx)
 
-        # Check for positive/confirm keywords (contains match, not exact)
-        positive = {"确认", "确定", "是", "好", "对", "行", "可以", "没问题", "正确", "y", "yes", "ok", "sure", "confirm"}
-        if any(kw in text for kw in positive):
+        # Check for positive/confirm keywords.
+        positive_exact = {"y", "yes", "ok", "sure"}
+        positive_contains = {"确认", "确定", "是", "好", "对", "行", "可以", "没问题", "正确", "confirm"}
+        if text in positive_exact or any(kw in text for kw in positive_contains):
             return await self._advance(steps, idx, session, _depth)
 
         # No clear intent — re-prompt
@@ -509,7 +512,7 @@ class WorkflowExecutor:
 
         # Auto-execute non-interactive steps (with depth guard)
         # Also auto-execute collect steps with no fields (display-only steps)
-        is_auto = next_step.step_type in ("validate", "tool_call", "complete")
+        is_auto = next_step.step_type in ("validate", "tool_call", "complete", "human_review")
         if not is_auto and next_step.step_type == "collect" and not (next_step.fields or []):
             is_auto = True
         if is_auto:

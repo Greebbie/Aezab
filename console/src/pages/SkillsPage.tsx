@@ -192,13 +192,35 @@ export default function SkillsPage() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2>Skill Management</h2>
+        <div>
+          <h2 style={{ marginBottom: 4 }}>Advanced Skills</h2>
+          <div style={{ color: '#64748b' }}>
+            Skills are runtime capability wrappers for advanced orchestration, not the main setup path for agents.
+          </div>
+        </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditing(null); form.resetFields(); setModalOpen(true); }}>
           Create Skill
         </Button>
       </div>
       <Alert
-        message="Auto-managed skills (created via Agent Capabilities) are hidden. To manage them, go to the Capabilities tab on the Agents page."
+        message="Use Agent Management -> Capabilities for normal agent setup"
+        description={
+          <div>
+            <div>
+              Knowledge, Workflows, and Tools remain the source-of-truth resource pages. Agent Capabilities binds
+              them to an agent and automatically creates managed skills for runtime function calling.
+            </div>
+            <ul style={{ margin: '8px 0 0 18px', padding: 0 }}>
+              <li>Reusable capability groups shared across multiple agents.</li>
+              <li>Composite skills that package multiple capabilities into one macro capability.</li>
+              <li>Delegate skills for routing a user to another agent, such as a different region or team.</li>
+              <li>debug runtime wrappers to inspect how capabilities are exposed to the LLM.</li>
+            </ul>
+            <div style={{ marginTop: 8 }}>
+              Auto-managed skills created via Agent Capabilities are hidden here by default.
+            </div>
+          </div>
+        }
         type="info"
         showIcon
         closable

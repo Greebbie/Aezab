@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Card, List, Upload, InputNumber, Popconfirm } from 'antd';
+import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Card, List, Upload, InputNumber, Popconfirm, Alert } from 'antd';
 import { PlusOutlined, DeleteOutlined, SearchOutlined, UploadOutlined, EyeOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import { knowledgeApi } from '../api';
+import { HelpLabel, HelpTooltip, PageHeader } from '../components/shared';
 
 const { TextArea } = Input;
 
 export default function KnowledgePage() {
+  const { t } = useTranslation();
   const [sources, setSources] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [sourceModal, setSourceModal] = useState(false);
@@ -31,7 +34,7 @@ export default function KnowledgePage() {
       const res = await knowledgeApi.listSources();
       setSources(res.data);
     } catch (e: any) {
-      message.error('加载知识源列表失败');
+      message.error(t('knowledge.messages.loadSourcesFailed'));
     } finally {
       setLoading(false);
     }
@@ -39,19 +42,23 @@ export default function KnowledgePage() {
 
   useEffect(() => { load(); }, []);
 
-  const sourceOptions = sources.map(s => ({ value: s.id, label: `${s.name} (${s.source_type})` }));
+  const errorDetail = (e: any) => e.response?.data?.detail || e.message || t('common.unknown');
+  const sourceOptions = sources.map(s => ({
+    value: s.id,
+    label: `${s.name} (${t(`knowledge.sourceTypes.${s.source_type}`, { defaultValue: s.source_type })})`,
+  }));
 
   const handleCreateSource = async () => {
     try {
       const values = await sourceForm.validateFields();
       await knowledgeApi.createSource(values);
-      message.success('知识源已创建');
+      message.success(t('knowledge.messages.sourceCreated'));
       setSourceModal(false);
       sourceForm.resetFields();
       load();
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('创建失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('knowledge.messages.createFailed')}: ${errorDetail(e)}`);
     }
   };
 
@@ -59,13 +66,13 @@ export default function KnowledgePage() {
     try {
       const values = await kvForm.validateFields();
       await knowledgeApi.addKV(values);
-      message.success('实体已添加');
+      message.success(t('knowledge.messages.kvAdded'));
       setKvModal(false);
       kvForm.resetFields();
       load();
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('添加失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('knowledge.messages.addFailed')}: ${errorDetail(e)}`);
     }
   };
 
@@ -73,13 +80,13 @@ export default function KnowledgePage() {
     try {
       const values = await faqForm.validateFields();
       await knowledgeApi.addFAQ(values);
-      message.success('FAQ 已添加');
+      message.success(t('knowledge.messages.faqAdded'));
       setFaqModal(false);
       faqForm.resetFields();
       load();
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('添加失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('knowledge.messages.addFailed')}: ${errorDetail(e)}`);
     }
   };
 
@@ -90,7 +97,7 @@ export default function KnowledgePage() {
       setSearchResults(res.data);
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('检索失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('knowledge.messages.searchFailed')}: ${errorDetail(e)}`);
     }
   };
 
@@ -98,7 +105,7 @@ export default function KnowledgePage() {
     try {
       const values = await uploadForm.validateFields();
       if (!values.file || values.file.length === 0) {
-        message.error('请选择文件');
+        message.error(t('knowledge.messages.chooseFile'));
         return;
       }
       const formData = new FormData();
@@ -115,13 +122,13 @@ export default function KnowledgePage() {
 
       setUploading(true);
       await knowledgeApi.upload(formData);
-      message.success('文档上传并分块成功');
+      message.success(t('knowledge.uploadSuccess'));
       setUploadModal(false);
       uploadForm.resetFields();
       load();
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('上传失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('knowledge.messages.uploadFailed')}: ${errorDetail(e)}`);
     } finally {
       setUploading(false);
     }
@@ -135,7 +142,7 @@ export default function KnowledgePage() {
       const res = await knowledgeApi.listChunks(sourceId);
       setChunks(res.data);
     } catch (e: any) {
-      message.error('加载条目失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('knowledge.messages.loadChunksFailed')}: ${errorDetail(e)}`);
       setChunks([]);
     } finally {
       setChunkLoading(false);
@@ -145,117 +152,167 @@ export default function KnowledgePage() {
   const handleDeleteSource = async (id: string) => {
     try {
       await knowledgeApi.deleteSource(id);
-      message.success('已删除');
+      message.success(t('knowledge.messages.deleted'));
       load();
     } catch (e: any) {
-      message.error('删除失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('knowledge.messages.deleteFailed')}: ${errorDetail(e)}`);
     }
   };
 
   const columns = [
     {
-      title: '名称', dataIndex: 'name', key: 'name',
+      title: t('common.name'), dataIndex: 'name', key: 'name',
       render: (v: string, record: any) => (
         <a onClick={() => handleViewChunks(record.id, v)}>{v}</a>
       ),
     },
     {
-      title: '类型', dataIndex: 'source_type', key: 'source_type',
+      title: <HelpLabel label={t('common.type')} help={t('knowledge.help.sourceType')} />, dataIndex: 'source_type', key: 'source_type',
       render: (v: string) => {
         const colors: Record<string, string> = { document: 'blue', faq: 'green', kv_entity: 'orange', structured_table: 'purple' };
-        return <Tag color={colors[v] || 'default'}>{v}</Tag>;
+        return <Tag color={colors[v] || 'default'}>{t(`knowledge.sourceTypes.${v}`, { defaultValue: v })}</Tag>;
       },
     },
-    { title: '域', dataIndex: 'domain', key: 'domain' },
-    { title: '条目数', dataIndex: 'chunk_count', key: 'chunk_count' },
-    { title: '状态', dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={v === 'ready' ? 'green' : 'orange'}>{v}</Tag> },
+    { title: <HelpLabel label={t('knowledge.domain')} help={t('knowledge.help.domain')} />, dataIndex: 'domain', key: 'domain' },
+    { title: <HelpLabel label={t('knowledge.chunkCount')} help={t('knowledge.help.chunkCount')} />, dataIndex: 'chunk_count', key: 'chunk_count' },
+    { title: t('common.status'), dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={v === 'ready' ? 'green' : 'orange'}>{v}</Tag> },
     {
-      title: '操作', key: 'actions', render: (_: any, record: any) => (
+      title: t('common.actions'), key: 'actions', render: (_: any, record: any) => (
         <Space>
-          <Button icon={<EyeOutlined />} size="small" onClick={() => handleViewChunks(record.id, record.name)}>查看</Button>
-          <Popconfirm title="确认删除此知识源及其所有条目？" onConfirm={() => handleDeleteSource(record.id)} okText="确认" cancelText="取消">
-            <Button icon={<DeleteOutlined />} size="small" danger>删除</Button>
+          <Button icon={<EyeOutlined />} size="small" onClick={() => handleViewChunks(record.id, record.name)}>{t('knowledge.viewChunks')}</Button>
+          <Popconfirm title={t('knowledge.deleteConfirm')} onConfirm={() => handleDeleteSource(record.id)} okText={t('common.confirm')} cancelText={t('common.cancel')}>
+            <Button icon={<DeleteOutlined />} size="small" danger>{t('common.delete')}</Button>
           </Popconfirm>
         </Space>
       ),
     },
   ];
 
+  const readySources = sources.filter((s) => s.status === 'ready').length;
+  const totalChunks = sources.reduce((sum, source) => sum + (source.chunk_count || 0), 0);
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2>知识管理</h2>
-        <Space>
-          <Button icon={<SearchOutlined />} onClick={() => { setSearchResults(null); setSearchModal(true); }}>检索测试</Button>
-          <Button icon={<UploadOutlined />} onClick={() => { uploadForm.resetFields(); setUploadModal(true); }}>上传文档</Button>
-          <Button onClick={() => { kvForm.resetFields(); setKvModal(true); }}>添加 KV 实体</Button>
-          <Button onClick={() => { faqForm.resetFields(); setFaqModal(true); }}>添加 FAQ</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { sourceForm.resetFields(); setSourceModal(true); }}>创建知识源</Button>
-        </Space>
+      <PageHeader
+        eyebrow={t('knowledge.eyebrow')}
+        title={t('knowledge.title')}
+        description={(
+          <>
+            {t('knowledge.description')}
+            <HelpTooltip content={t('knowledge.help.page')} />
+          </>
+        )}
+        status={t('knowledge.supportedFormats')}
+        actions={(
+          <>
+            <Button icon={<SearchOutlined />} onClick={() => { setSearchResults(null); setSearchModal(true); }}>{t('knowledge.search')}</Button>
+            <Button type="primary" icon={<UploadOutlined />} onClick={() => { uploadForm.resetFields(); setUploadModal(true); }}>{t('knowledge.upload')}</Button>
+            <Button onClick={() => { kvForm.resetFields(); setKvModal(true); }}>{t('knowledge.addKV')}</Button>
+            <Button onClick={() => { faqForm.resetFields(); setFaqModal(true); }}>{t('knowledge.addFAQ')}</Button>
+            <Button icon={<PlusOutlined />} onClick={() => { sourceForm.resetFields(); setSourceModal(true); }}>{t('knowledge.addSource')}</Button>
+          </>
+        )}
+      />
+
+      <div className="aezab-summary-grid">
+        <div className="aezab-stat-card">
+          <div className="aezab-stat-label">{t('knowledge.totalSources')}</div>
+          <div className="aezab-stat-value">{sources.length}</div>
+        </div>
+        <div className="aezab-stat-card">
+          <div className="aezab-stat-label">{t('knowledge.readySources')}</div>
+          <div className="aezab-stat-value">{readySources}</div>
+        </div>
+        <div className="aezab-stat-card">
+          <div className="aezab-stat-label">{t('knowledge.totalChunks')}</div>
+          <div className="aezab-stat-value">{totalChunks}</div>
+        </div>
+        <div className="aezab-stat-card">
+          <div className="aezab-stat-label">
+            <HelpLabel label={t('knowledge.ingestionStandard')} help={t('knowledge.help.ingestionStandard')} />
+          </div>
+          <div className="aezab-muted">{t('knowledge.ingestionStandardValue')}</div>
+        </div>
       </div>
 
-      <Table dataSource={sources} columns={columns} rowKey="id" loading={loading} />
+      <div className="aezab-table-card">
+        <Table
+          dataSource={sources}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          pagination={{ pageSize: 10 }}
+          locale={{ emptyText: t('knowledge.emptySources') }}
+        />
+      </div>
 
       {/* Create source */}
-      <Modal title="创建知识源" open={sourceModal} onOk={handleCreateSource} onCancel={() => setSourceModal(false)}>
+      <Modal title={t('knowledge.addSource')} open={sourceModal} onOk={handleCreateSource} onCancel={() => setSourceModal(false)} okText={t('common.save')} cancelText={t('common.cancel')}>
         <Form form={sourceForm} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="source_type" label="类型" rules={[{ required: true }]}>
+          <Form.Item name="name" label={t('common.name')} rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="source_type" label={<HelpLabel label={t('common.type')} help={t('knowledge.help.sourceType')} />} rules={[{ required: true }]}>
             <Select options={[
-              { value: 'document', label: '文档' },
-              { value: 'faq', label: 'FAQ' },
-              { value: 'kv_entity', label: 'KV实体表' },
-              { value: 'structured_table', label: '结构化表' },
+              { value: 'document', label: t('knowledge.sourceTypes.document') },
+              { value: 'faq', label: t('knowledge.sourceTypes.faq') },
+              { value: 'kv_entity', label: t('knowledge.sourceTypes.kv_entity') },
+              { value: 'structured_table', label: t('knowledge.sourceTypes.structured_table') },
             ]} />
           </Form.Item>
-          <Form.Item name="domain" label="知识域" initialValue="default"><Input /></Form.Item>
+          <Form.Item name="domain" label={<HelpLabel label={t('knowledge.domain')} help={t('knowledge.help.domain')} />} initialValue="default"><Input /></Form.Item>
         </Form>
       </Modal>
 
       {/* Add KV */}
-      <Modal title="添加 KV 实体 (快答通道)" open={kvModal} onOk={handleAddKV} onCancel={() => setKvModal(false)}>
+      <Modal title={t('knowledge.addKVTitle')} open={kvModal} onOk={handleAddKV} onCancel={() => setKvModal(false)} okText={t('common.save')} cancelText={t('common.cancel')}>
         <Form form={kvForm} layout="vertical">
-          <Form.Item name="source_id" label="知识源" rules={[{ required: true }]}>
-            <Select placeholder="选择知识源" options={sourceOptions} />
+          <Form.Item name="source_id" label={<HelpLabel label={t('knowledge.sources')} help={t('knowledge.help.source')} />} rules={[{ required: true }]}>
+            <Select placeholder={t('knowledge.selectSource')} options={sourceOptions} />
           </Form.Item>
-          <Form.Item name="entity_key" label="关键词/实体名" rules={[{ required: true }]}><Input placeholder="如: 市民中心电话" /></Form.Item>
-          <Form.Item name="content" label="值/答案" rules={[{ required: true }]}><TextArea placeholder="0571-12345678" /></Form.Item>
-          <Form.Item name="domain" label="知识域" initialValue="default"><Input /></Form.Item>
+          <Form.Item name="entity_key" label={<HelpLabel label={t('knowledge.entityKey')} help={t('knowledge.help.entityKey')} />} rules={[{ required: true }]}><Input placeholder={t('knowledge.entityKeyPlaceholder')} /></Form.Item>
+          <Form.Item name="content" label={t('knowledge.content')} rules={[{ required: true }]}><TextArea placeholder={t('knowledge.contentPlaceholder')} /></Form.Item>
+          <Form.Item name="domain" label={<HelpLabel label={t('knowledge.domain')} help={t('knowledge.help.domain')} />} initialValue="default"><Input /></Form.Item>
         </Form>
       </Modal>
 
       {/* Add FAQ */}
-      <Modal title="添加 FAQ" open={faqModal} onOk={handleAddFAQ} onCancel={() => setFaqModal(false)}>
+      <Modal title={t('knowledge.addFAQ')} open={faqModal} onOk={handleAddFAQ} onCancel={() => setFaqModal(false)} okText={t('common.save')} cancelText={t('common.cancel')}>
         <Form form={faqForm} layout="vertical">
-          <Form.Item name="source_id" label="知识源" rules={[{ required: true }]}>
-            <Select placeholder="选择知识源" options={sourceOptions} />
+          <Form.Item name="source_id" label={<HelpLabel label={t('knowledge.sources')} help={t('knowledge.help.source')} />} rules={[{ required: true }]}>
+            <Select placeholder={t('knowledge.selectSource')} options={sourceOptions} />
           </Form.Item>
-          <Form.Item name="question" label="问题" rules={[{ required: true }]}><Input placeholder="办居住证需要什么材料？" /></Form.Item>
-          <Form.Item name="answer" label="答案" rules={[{ required: true }]}><TextArea rows={4} /></Form.Item>
-          <Form.Item name="domain" label="知识域" initialValue="default"><Input /></Form.Item>
+          <Form.Item name="question" label={<HelpLabel label={t('knowledge.question')} help={t('knowledge.help.faq')} />} rules={[{ required: true }]}><Input placeholder={t('knowledge.questionPlaceholder')} /></Form.Item>
+          <Form.Item name="answer" label={t('knowledge.answer')} rules={[{ required: true }]}><TextArea rows={4} /></Form.Item>
+          <Form.Item name="domain" label={<HelpLabel label={t('knowledge.domain')} help={t('knowledge.help.domain')} />} initialValue="default"><Input /></Form.Item>
         </Form>
       </Modal>
 
       {/* Upload document */}
-      <Modal title="上传文档" open={uploadModal} onOk={handleUpload} onCancel={() => setUploadModal(false)} confirmLoading={uploading}>
+      <Modal title={t('knowledge.upload')} open={uploadModal} onOk={handleUpload} onCancel={() => setUploadModal(false)} confirmLoading={uploading} okText={t('knowledge.upload')} cancelText={t('common.cancel')}>
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('knowledge.uploadStandard')}
+          description={t('knowledge.uploadStandardDesc')}
+        />
         <Form form={uploadForm} layout="vertical">
-          <Form.Item name="source_id" label="知识源">
+          <Form.Item name="source_id" label={<HelpLabel label={t('knowledge.sources')} help={t('knowledge.help.source')} />}>
             <Select
               allowClear
-              placeholder="不选则自动按文件名创建"
+              placeholder={t('knowledge.autoCreateSource')}
               options={sourceOptions}
             />
           </Form.Item>
-          <Form.Item name="file" label="文件" valuePropName="fileList" getValueFromEvent={(e: any) => e?.fileList} rules={[{ required: true }]}>
-            <Upload beforeUpload={() => false} maxCount={1} accept=".txt,.md,.pdf,.docx">
-              <Button icon={<UploadOutlined />}>选择文件 (.txt, .md, .pdf, .docx)</Button>
+          <Form.Item name="file" label={<HelpLabel label={t('knowledge.file')} help={t('knowledge.help.file')} />} valuePropName="fileList" getValueFromEvent={(e: any) => e?.fileList} rules={[{ required: true }]}>
+            <Upload beforeUpload={() => false} maxCount={1} accept=".txt,.md,.pdf,.docx,.csv,.xlsx">
+              <Button icon={<UploadOutlined />}>{t('knowledge.chooseFile')}</Button>
             </Upload>
           </Form.Item>
-          <Form.Item name="domain" label="知识域" initialValue="default"><Input /></Form.Item>
-          <Form.Item name="chunk_size" label="分块大小 (字符)" initialValue={500}>
+          <Form.Item name="domain" label={<HelpLabel label={t('knowledge.domain')} help={t('knowledge.help.domain')} />} initialValue="default"><Input /></Form.Item>
+          <Form.Item name="chunk_size" label={<HelpLabel label={t('knowledge.chunkSizeWithUnit')} help={t('knowledge.help.chunkSize')} />} initialValue={500}>
             <InputNumber min={100} max={5000} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="chunk_overlap" label="分块重叠 (字符)" initialValue={50}>
+          <Form.Item name="chunk_overlap" label={<HelpLabel label={t('knowledge.chunkOverlapWithUnit')} help={t('knowledge.help.chunkOverlap')} />} initialValue={50}>
             <InputNumber min={0} max={500} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
@@ -263,7 +320,7 @@ export default function KnowledgePage() {
 
       {/* Chunk viewer */}
       <Modal
-        title={`条目查看 — ${chunkSourceName}`}
+        title={`${t('knowledge.viewChunks')} - ${chunkSourceName}`}
         open={chunkModal}
         onCancel={() => setChunkModal(false)}
         footer={null}
@@ -276,34 +333,40 @@ export default function KnowledgePage() {
           size="small"
           pagination={{ pageSize: 10 }}
           columns={[
-            { title: '关键词', dataIndex: 'entity_key', key: 'entity_key', width: 160, ellipsis: true },
+            { title: t('knowledge.entityKey'), dataIndex: 'entity_key', key: 'entity_key', width: 160, ellipsis: true },
             {
-              title: '内容', dataIndex: 'content', key: 'content',
+              title: t('knowledge.content'), dataIndex: 'content', key: 'content',
               ellipsis: true,
               render: (v: string) => (
                 <span title={v}>{v && v.length > 120 ? v.slice(0, 120) + '...' : v}</span>
               ),
             },
-            { title: '域', dataIndex: 'domain', key: 'domain', width: 100 },
+            { title: <HelpLabel label={t('knowledge.domain')} help={t('knowledge.help.domain')} />, dataIndex: 'domain', key: 'domain', width: 100 },
           ]}
-          locale={{ emptyText: '该知识源暂无条目' }}
+          locale={{ emptyText: t('knowledge.emptyChunks') }}
         />
       </Modal>
 
       {/* Search test */}
-      <Modal title="检索测试" open={searchModal} onCancel={() => setSearchModal(false)} footer={null} width={720}>
+      <Modal
+        title={<HelpLabel label={t('knowledge.search')} help={t('knowledge.help.search')} />}
+        open={searchModal}
+        onCancel={() => setSearchModal(false)}
+        footer={null}
+        width={720}
+      >
         <Form form={searchForm} layout="inline" onFinish={handleSearch} style={{ marginBottom: 16 }}>
           <Form.Item name="query" rules={[{ required: true }]}>
-            <Input placeholder="输入查询语句" style={{ width: 400 }} />
+            <Input placeholder={t('knowledge.searchPlaceholder')} style={{ width: 400 }} />
           </Form.Item>
           <Form.Item name="top_k" initialValue={5}>
             <Select style={{ width: 80 }} options={[3, 5, 10].map(n => ({ value: n, label: `Top ${n}` }))} />
           </Form.Item>
-          <Button type="primary" htmlType="submit">搜索</Button>
+          <Button type="primary" htmlType="submit">{t('common.search')}</Button>
         </Form>
         {searchResults && (
-          <Card size="small" title={`结果 (${searchResults.hits?.length || 0} hits, ${searchResults.latency_ms?.toFixed(1)}ms)`}>
-            {searchResults.fast_answer && <p><strong>快答:</strong> {searchResults.fast_answer}</p>}
+          <Card size="small" title={`${t('knowledge.results')} (${searchResults.hits?.length || 0} hits, ${searchResults.latency_ms?.toFixed(1)}ms)`}>
+            {searchResults.fast_answer && <p><strong>{t('knowledge.fastAnswer')}:</strong> {searchResults.fast_answer}</p>}
             <List
               size="small"
               dataSource={searchResults.hits || []}

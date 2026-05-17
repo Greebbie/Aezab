@@ -306,26 +306,57 @@ class KnowledgeRetriever:
             conditions.append(KnowledgeChunk.entity_key.contains(tok))
             conditions.append(KnowledgeChunk.content.contains(tok))
 
-        stmt = stmt.where(or_(*conditions)).limit(top_k)
+        # Over-fetch then score in Python.  SQL LIKE only finds candidates; it
+        # must not decide rank, otherwise broad token hits such as "电话" can
+        # outrank an exact KV key like "物业服务电话".
+        stmt = stmt.where(or_(*conditions)).limit(max(top_k * 20, 50))
 
         result = await self.db.execute(stmt)
         rows = result.all()
 
-        hits = []
+        scored_hits: list[tuple[float, RetrievalHit]] = []
+        query_norm = query.strip().lower()
+        query_tokens = [tok.lower() for tok in tokens if tok.strip()]
+
         for chunk, source_name in rows:
-            hits.append(RetrievalHit(
-                chunk_id=chunk.id,
-                source_id=chunk.source_id,
-                source_name=source_name,
-                content=chunk.content,
-                score=1.0,
-                page=chunk.page_number,
-                paragraph=chunk.paragraph_index,
-                line_start=chunk.line_start,
-                line_end=chunk.line_end,
-                channel="fast",
+            entity_key = (chunk.entity_key or "").strip().lower()
+            content = (chunk.content or "").lower()
+
+            score = 0.0
+            if entity_key and entity_key == query_norm:
+                score = 1.0
+            elif entity_key and (entity_key in query_norm or query_norm in entity_key):
+                score = 0.98
+            elif query_norm and query_norm in content:
+                score = 0.9
+            elif query_tokens:
+                entity_matches = sum(1 for tok in query_tokens if tok in entity_key)
+                content_matches = sum(1 for tok in query_tokens if tok in content)
+                entity_ratio = entity_matches / len(query_tokens)
+                content_ratio = content_matches / len(query_tokens)
+                score = max(entity_ratio * 0.82, content_ratio * 0.55)
+
+            if score <= 0:
+                continue
+
+            scored_hits.append((
+                score,
+                RetrievalHit(
+                    chunk_id=chunk.id,
+                    source_id=chunk.source_id,
+                    source_name=source_name,
+                    content=chunk.content,
+                    score=round(score, 6),
+                    page=chunk.page_number,
+                    paragraph=chunk.paragraph_index,
+                    line_start=chunk.line_start,
+                    line_end=chunk.line_end,
+                    channel="fast",
+                ),
             ))
-        return hits
+
+        scored_hits.sort(key=lambda item: item[0], reverse=True)
+        return [hit for _, hit in scored_hits[:top_k]]
 
     # ── Vector Channel ───────────────────────────────────────────
     async def _vector_search(

@@ -11,11 +11,13 @@ from server.engine.asr import ASRProvider
 
 class ASRStatusResponse(BaseModel):
     enabled: bool
+    ready: bool = False
     provider: str
     base_url: str
     model: str
     max_file_mb: int
     has_api_key: bool = False
+    needs_api_key: bool = False
     uses_llm_api_key: bool = False
 
 
@@ -27,6 +29,7 @@ class ASRConfigResponse(ASRStatusResponse):
     has_saved_config: bool = False
     has_saved_api_key: bool = False
     api_key_source: str = "missing"
+    config_source: str = "environment"
 
 
 class ASRConfigUpdate(BaseModel):

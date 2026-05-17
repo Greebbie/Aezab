@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Button, Form, Input, InputNumber, Select, Switch, Space, message, Tag,
+  Alert, Card, Button, Form, Input, InputNumber, Select, Switch, Space, message, Tag, Tooltip,
   Descriptions, Spin, Row, Col, Divider, Upload,
 } from 'antd';
 import {
   ThunderboltOutlined, DashboardOutlined, SafetyCertificateOutlined,
   AudioOutlined, CheckCircleOutlined, ExperimentOutlined, SettingOutlined, UploadOutlined,
 } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import { asrApi, performanceApi, vectorAdminApi } from '../api';
 
 interface PresetData {
@@ -74,7 +75,215 @@ const ASR_PROVIDER_DEFAULTS: Record<string, Record<string, unknown>> = {
   },
 };
 
+const ASR_KEY_SOURCE_LABELS: Record<string, string> = {
+  saved_config: 'Saved in console',
+  environment: 'Environment variable',
+  llm_config: 'LLM configuration',
+  missing: 'Missing',
+};
+
+const SETTINGS_COPY = {
+  zh: {
+    pageTitle: '性能与运行设置',
+    refresh: '刷新',
+    enabled: '已启用',
+    disabled: '已关闭',
+    ready: '就绪',
+    custom: '自定义',
+    active: '当前',
+    apply: '应用',
+    reapply: '重新应用',
+    resetToCurrent: '重置为当前值',
+    rag: {
+      title: 'RAG 检索引擎',
+      enableVector: '启用向量检索 / 预热 Embedding',
+      infoTitle: 'Fast KV + BM25 部署后即可使用',
+      infoDescription:
+        'Balanced Mode 是 top_k、超时、关键词权重、工具重试、reranker 行为的运行时预设。Embedding 预热只启用可选向量通道；未启用时，RAG 仍会通过 fast answers 和关键词检索工作。',
+      baselineRetrieval: '基础检索',
+      baselineReady: 'Fast KV + BM25 就绪',
+      vectorChannel: '向量通道',
+      vectorOptional: '可选，未加载',
+      provider: '提供方',
+      configuredModel: '配置模型',
+      loaded: '加载状态',
+      loadedModel: '已加载模型',
+      dimension: '维度',
+      hfEndpoint: 'HF Endpoint',
+    },
+    asr: {
+      title: '语音输入 / ASR 配置',
+      runtimeStatus: '运行状态',
+      currentProvider: '当前提供方',
+      apiKey: 'ASR API Key',
+      keySource: 'Key 来源',
+      consoleSavedConfig: '控制台保存配置',
+      configurationFile: '配置文件',
+      savedInConsole: '控制台已保存',
+      notSavedInConsole: '控制台未保存',
+      usingLlmKey: '使用 LLM Key',
+      removeSavedKeyHelp:
+        '只移除控制台配置文件中保存的 API Key。环境变量需要在 Aezab 外部管理。',
+      environmentKeyHelp:
+        'ASR 就绪是因为环境变量提供了 Key。控制台没有可移除的保存 Key；请修改 .env 或云端 secrets。',
+      noSavedKeyHelp: '控制台配置文件里还没有保存 API Key。',
+      disabled: '已关闭',
+      ready: '可转写',
+      missingKey: '已启用，但缺少 API Key',
+      incomplete: '已启用，但配置不完整',
+      provider: 'ASR Provider',
+      baseUrl: 'ASR Base URL',
+      model: 'ASR Model',
+      timeout: 'ASR Timeout (seconds)',
+      maxFile: 'Max Audio File (MB)',
+      funasrPath: 'FunASR HTTP Path',
+      selectProvider: '请选择 ASR 提供方',
+      baseRequired: '请填写 ASR Base URL',
+      modelRequired: '请填写 ASR Model',
+      apiPlaceholder: '留空则保留当前 Key',
+      save: '保存 ASR 配置',
+      applyDefaults: '应用提供方默认值',
+      removeSavedKey: '移除已保存 API Key',
+      noSavedKey: '没有已保存 API Key',
+      testUpload: '测试 ASR 上传',
+      testResult: 'ASR 测试结果',
+      transcript: '转写文本',
+      language: '语言',
+    },
+    asrKeySources: {
+      saved_config: '控制台保存',
+      environment: '环境变量',
+      llm_config: 'LLM 配置',
+      missing: '缺失',
+    },
+    presets: {
+      title: '性能预设',
+      retrievalTopK: 'Retrieval Top-K',
+      llmTemperature: 'LLM Temperature',
+      llmMaxTokens: 'LLM Max Tokens',
+      llmTimeout: 'LLM Timeout',
+      toolRetries: 'Tool Retries',
+      keywordWeight: 'Keyword Weight',
+      hnswEfSearch: 'HNSW efSearch',
+      reranker: 'Reranker',
+    },
+    current: {
+      title: '当前运行配置',
+      activeConfiguration: '当前配置',
+    },
+    advanced: {
+      title: '高级调优',
+      save: '保存配置',
+    },
+  },
+  en: {
+    pageTitle: 'Performance Settings',
+    refresh: 'Refresh',
+    enabled: 'Enabled',
+    disabled: 'Disabled',
+    ready: 'Ready',
+    custom: 'Custom',
+    active: 'Active',
+    apply: 'Apply',
+    reapply: 'Re-apply',
+    resetToCurrent: 'Reset to Current',
+    rag: {
+      title: 'RAG Retrieval Engine',
+      enableVector: 'Enable Vector Retrieval / Warm Up Embedding',
+      infoTitle: 'Fast KV + BM25 are available immediately',
+      infoDescription:
+        'Balanced Mode is a runtime preset for top_k, timeouts, keyword weight, tool retries, and reranker behavior. Embedding warmup only enables the optional vector channel; RAG still works without it through fast answers and keyword retrieval.',
+      baselineRetrieval: 'Baseline Retrieval',
+      baselineReady: 'Fast KV + BM25 ready',
+      vectorChannel: 'Vector Channel',
+      vectorOptional: 'Optional, not loaded',
+      provider: 'Provider',
+      configuredModel: 'Configured Model',
+      loaded: 'Loaded',
+      loadedModel: 'Loaded Model',
+      dimension: 'Dimension',
+      hfEndpoint: 'HF Endpoint',
+    },
+    asr: {
+      title: 'Voice Input / ASR Configuration',
+      runtimeStatus: 'Runtime Status',
+      currentProvider: 'Current Provider',
+      apiKey: 'ASR API Key',
+      keySource: 'Key Source',
+      consoleSavedConfig: 'Console Saved Config',
+      configurationFile: 'Configuration File',
+      savedInConsole: 'Saved in console',
+      notSavedInConsole: 'Not saved in console',
+      usingLlmKey: 'Using LLM key',
+      removeSavedKeyHelp:
+        'Remove only the API key saved in the console config file. Environment variables are managed outside Aezab.',
+      environmentKeyHelp:
+        'ASR is ready because an environment variable provides the key. There is no console-saved key to remove; edit .env or cloud secrets to change it.',
+      noSavedKeyHelp: 'No API key has been saved in the console config file.',
+      disabled: 'Disabled',
+      ready: 'Ready to transcribe',
+      missingKey: 'Provider enabled, API key missing',
+      incomplete: 'Provider enabled, configuration incomplete',
+      provider: 'ASR Provider',
+      baseUrl: 'ASR Base URL',
+      model: 'ASR Model',
+      timeout: 'ASR Timeout (seconds)',
+      maxFile: 'Max Audio File (MB)',
+      funasrPath: 'FunASR HTTP Path',
+      selectProvider: 'Select an ASR provider',
+      baseRequired: 'ASR base URL is required',
+      modelRequired: 'ASR model is required',
+      apiPlaceholder: 'Leave blank to keep current key',
+      save: 'Save ASR Configuration',
+      applyDefaults: 'Apply Provider Defaults',
+      removeSavedKey: 'Remove Saved API Key',
+      noSavedKey: 'No Saved API Key to Remove',
+      testUpload: 'Test ASR Upload',
+      testResult: 'ASR Test Result',
+      transcript: 'Transcript',
+      language: 'Language',
+    },
+    asrKeySources: ASR_KEY_SOURCE_LABELS,
+    presets: {
+      title: 'Presets',
+      retrievalTopK: 'Retrieval Top-K',
+      llmTemperature: 'LLM Temperature',
+      llmMaxTokens: 'LLM Max Tokens',
+      llmTimeout: 'LLM Timeout',
+      toolRetries: 'Tool Retries',
+      keywordWeight: 'Keyword Weight',
+      hnswEfSearch: 'HNSW efSearch',
+      reranker: 'Reranker',
+    },
+    current: {
+      title: 'Current Runtime Configuration',
+      activeConfiguration: 'Active Configuration',
+    },
+    advanced: {
+      title: 'Advanced Tuning',
+      save: 'Save Configuration',
+    },
+  },
+} as const;
+
+type SettingsCopy = (typeof SETTINGS_COPY)[keyof typeof SETTINGS_COPY];
+
+function asrRuntimeStatusText(status: Record<string, any>, copy: SettingsCopy) {
+  if (!status.enabled) return copy.asr.disabled;
+  if (status.ready) return copy.asr.ready;
+  if (status.needs_api_key && !status.has_api_key) return copy.asr.missingKey;
+  return copy.asr.incomplete;
+}
+
+function asrRuntimeStatusColor(status: Record<string, any>) {
+  if (!status.enabled) return 'default';
+  if (status.ready) return 'green';
+  return 'orange';
+}
+
 export default function SettingsPage() {
+  const { i18n } = useTranslation();
+  const copy: SettingsCopy = i18n.language === 'zh' ? SETTINGS_COPY.zh : SETTINGS_COPY.en;
   const [presets, setPresets] = useState<Record<string, PresetData>>({});
   const [currentConfig, setCurrentConfig] = useState<Record<string, any>>({});
   const [loadingPresets, setLoadingPresets] = useState(false);
@@ -136,6 +345,12 @@ export default function SettingsPage() {
       setLoadingModelStatus(false);
     }
   };
+
+  const removeSavedAsrKeyHelp = asrStatus.has_saved_api_key
+    ? copy.asr.removeSavedKeyHelp
+    : asrStatus.api_key_source === 'environment'
+      ? copy.asr.environmentKeyHelp
+      : copy.asr.noSavedKeyHelp;
 
   const handleWarmupModel = async () => {
     setWarmingModel(true);
@@ -293,67 +508,82 @@ export default function SettingsPage() {
 
   return (
     <div>
-      <h2>Performance Settings</h2>
+      <h2>{copy.pageTitle}</h2>
 
       <Card
-        title={<Space><SettingOutlined />Embedding Model</Space>}
+        title={<Space><SettingOutlined />{copy.rag.title}</Space>}
         extra={
           <Space>
-            <Button onClick={loadModelStatus} loading={loadingModelStatus}>Refresh</Button>
+            <Button onClick={loadModelStatus} loading={loadingModelStatus}>{copy.refresh}</Button>
             <Button type="primary" onClick={handleWarmupModel} loading={warmingModel}>
-              Warm Up / Download
+              {copy.rag.enableVector}
             </Button>
           </Space>
         }
         style={{ marginBottom: 24 }}
       >
+        <Alert
+          showIcon
+          type="info"
+          style={{ marginBottom: 16 }}
+          message={copy.rag.infoTitle}
+          description={copy.rag.infoDescription}
+        />
         <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }}>
-          <Descriptions.Item label="Provider">{modelStatus.provider || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Configured Model">{modelStatus.configured_model || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Loaded">
+          <Descriptions.Item label={copy.rag.baselineRetrieval}>
+            <Tag color="green">{copy.rag.baselineReady}</Tag>
+          </Descriptions.Item>
+          <Descriptions.Item label={copy.rag.vectorChannel}>
             <Tag color={modelStatus.loaded ? 'green' : 'default'}>
-              {modelStatus.loaded ? 'Ready' : 'Not loaded'}
+              {modelStatus.loaded ? copy.ready : copy.rag.vectorOptional}
             </Tag>
           </Descriptions.Item>
-          <Descriptions.Item label="Loaded Model">{modelStatus.loaded_model || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Dimension">
+          <Descriptions.Item label={copy.rag.provider}>{modelStatus.provider || '-'}</Descriptions.Item>
+          <Descriptions.Item label={copy.rag.configuredModel}>{modelStatus.configured_model || '-'}</Descriptions.Item>
+          <Descriptions.Item label={copy.rag.loaded}>
+            <Tag color={modelStatus.loaded ? 'green' : 'default'}>
+              {modelStatus.loaded ? copy.ready : copy.rag.vectorOptional}
+            </Tag>
+          </Descriptions.Item>
+          <Descriptions.Item label={copy.rag.loadedModel}>{modelStatus.loaded_model || '-'}</Descriptions.Item>
+          <Descriptions.Item label={copy.rag.dimension}>
             {modelStatus.loaded_dimension || modelStatus.configured_dimension || '-'}
           </Descriptions.Item>
-          <Descriptions.Item label="HF Endpoint">{modelStatus.hf_endpoint || '-'}</Descriptions.Item>
+          <Descriptions.Item label={copy.rag.hfEndpoint}>{modelStatus.hf_endpoint || '-'}</Descriptions.Item>
         </Descriptions>
       </Card>
 
       {/* ── Preset Cards ─────────────────────────────────── */}
       <Card
-        title={<Space><AudioOutlined />Voice Input / ASR Configuration</Space>}
-        extra={<Button onClick={loadAsrStatus} loading={loadingAsrStatus}>Refresh</Button>}
+        title={<Space><AudioOutlined />{copy.asr.title}</Space>}
+        extra={<Button onClick={loadAsrStatus} loading={loadingAsrStatus}>{copy.refresh}</Button>}
         style={{ marginBottom: 24 }}
       >
         <Spin spinning={loadingAsrStatus}>
           <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }} style={{ marginBottom: 16 }}>
-            <Descriptions.Item label="Status">
-              <Tag color={asrStatus.enabled ? 'green' : 'default'}>
-                {asrStatus.enabled ? 'Enabled' : 'Disabled'}
+            <Descriptions.Item label={copy.asr.runtimeStatus}>
+              <Tag color={asrRuntimeStatusColor(asrStatus)}>
+                {asrRuntimeStatusText(asrStatus, copy)}
               </Tag>
             </Descriptions.Item>
-            <Descriptions.Item label="Current Provider">{asrStatus.provider || '-'}</Descriptions.Item>
-            <Descriptions.Item label="API Key">
+            <Descriptions.Item label={copy.asr.currentProvider}>{asrStatus.provider || '-'}</Descriptions.Item>
+            <Descriptions.Item label={copy.asr.apiKey}>
               <Tag color={asrStatus.has_api_key ? 'green' : 'orange'}>
-                {asrStatus.has_api_key ? 'Configured' : 'Missing'}
+                {copy.asrKeySources[asrStatus.api_key_source as keyof typeof copy.asrKeySources] || asrStatus.api_key_source || copy.asrKeySources.missing}
               </Tag>
-              {asrStatus.uses_llm_api_key && <Tag color="blue">Using LLM key</Tag>}
+              {asrStatus.uses_llm_api_key && <Tag color="blue">{copy.asr.usingLlmKey}</Tag>}
             </Descriptions.Item>
-            <Descriptions.Item label="Key Source">
+            <Descriptions.Item label={copy.asr.keySource}>
               <Tag color={asrStatus.api_key_source === 'saved_config' ? 'purple' : 'blue'}>
-                {asrStatus.api_key_source || 'missing'}
+                {copy.asrKeySources[asrStatus.api_key_source as keyof typeof copy.asrKeySources] || asrStatus.api_key_source || copy.asrKeySources.missing}
               </Tag>
             </Descriptions.Item>
-            <Descriptions.Item label="Saved Overrides">
+            <Descriptions.Item label={copy.asr.consoleSavedConfig}>
               <Tag color={asrStatus.has_saved_config ? 'blue' : 'default'}>
-                {asrStatus.has_saved_config ? 'Saved' : 'Environment defaults'}
+                {asrStatus.has_saved_config ? copy.asr.savedInConsole : copy.asr.notSavedInConsole}
               </Tag>
             </Descriptions.Item>
-            <Descriptions.Item label="Configuration File">{asrStatus.config_path || '-'}</Descriptions.Item>
+            <Descriptions.Item label={copy.asr.configurationFile}>{asrStatus.config_path || '-'}</Descriptions.Item>
           </Descriptions>
 
           <Form form={asrForm} layout="vertical">
@@ -361,8 +591,8 @@ export default function SettingsPage() {
               <Col xs={24} md={8}>
                 <Form.Item
                   name="provider"
-                  label="ASR Provider"
-                  rules={[{ required: true, message: 'Select an ASR provider' }]}
+                  label={copy.asr.provider}
+                  rules={[{ required: true, message: copy.asr.selectProvider }]}
                 >
                   <Select options={ASR_PROVIDER_OPTIONS} onChange={handleAsrProviderChange} />
                 </Form.Item>
@@ -370,8 +600,8 @@ export default function SettingsPage() {
               <Col xs={24} md={8}>
                 <Form.Item
                   name="base_url"
-                  label="ASR Base URL"
-                  rules={[{ required: asrProvider !== 'disabled', message: 'ASR base URL is required' }]}
+                  label={copy.asr.baseUrl}
+                  rules={[{ required: asrProvider !== 'disabled', message: copy.asr.baseRequired }]}
                 >
                   <Input placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
                 </Form.Item>
@@ -379,8 +609,8 @@ export default function SettingsPage() {
               <Col xs={24} md={8}>
                 <Form.Item
                   name="model"
-                  label="ASR Model"
-                  rules={[{ required: asrProvider !== 'disabled', message: 'ASR model is required' }]}
+                  label={copy.asr.model}
+                  rules={[{ required: asrProvider !== 'disabled', message: copy.asr.modelRequired }]}
                 >
                   <Input placeholder="qwen3-asr-flash" />
                 </Form.Item>
@@ -389,17 +619,17 @@ export default function SettingsPage() {
 
             <Row gutter={16}>
               <Col xs={24} md={8}>
-                <Form.Item name="api_key" label="ASR API Key">
-                  <Input.Password placeholder="Leave blank to keep current key" autoComplete="new-password" />
+                <Form.Item name="api_key" label={copy.asr.apiKey}>
+                  <Input.Password placeholder={copy.asr.apiPlaceholder} autoComplete="new-password" />
                 </Form.Item>
               </Col>
               <Col xs={24} md={8}>
-                <Form.Item name="timeout" label="ASR Timeout (seconds)">
+                <Form.Item name="timeout" label={copy.asr.timeout}>
                   <InputNumber min={5} max={300} style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
               <Col xs={24} md={8}>
-                <Form.Item name="max_file_mb" label="Max Audio File (MB)">
+                <Form.Item name="max_file_mb" label={copy.asr.maxFile}>
                   <InputNumber min={1} max={200} style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
@@ -407,7 +637,7 @@ export default function SettingsPage() {
 
             <Row gutter={16}>
               <Col xs={24} md={8}>
-                <Form.Item name="funasr_path" label="FunASR HTTP Path">
+                <Form.Item name="funasr_path" label={copy.asr.funasrPath}>
                   <Input placeholder="/transcribe" />
                 </Form.Item>
               </Col>
@@ -415,42 +645,46 @@ export default function SettingsPage() {
 
             <Space>
               <Button type="primary" onClick={handleSaveAsrConfig} loading={savingAsrConfig}>
-                Save ASR Configuration
+                {copy.asr.save}
               </Button>
               <Button onClick={() => applyAsrProviderDefaults(asrProvider)} disabled={!asrProvider}>
-                Apply Provider Defaults
+                {copy.asr.applyDefaults}
               </Button>
-              <Button
-                danger
-                onClick={handleRemoveSavedAsrKey}
-                loading={savingAsrConfig}
-                disabled={!asrStatus.has_saved_api_key}
-              >
-                Remove Saved API Key
-              </Button>
+              <Tooltip title={removeSavedAsrKeyHelp}>
+                <span>
+                  <Button
+                    danger
+                    onClick={handleRemoveSavedAsrKey}
+                    loading={savingAsrConfig}
+                    disabled={!asrStatus.has_saved_api_key}
+                  >
+                    {asrStatus.has_saved_api_key ? copy.asr.removeSavedKey : copy.asr.noSavedKey}
+                  </Button>
+                </span>
+              </Tooltip>
               <Upload
                 accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.opus,.flac,.webm"
                 beforeUpload={handleTestAsrUpload}
                 showUploadList={false}
-                disabled={testingAsr || !asrStatus.enabled}
+                disabled={testingAsr || !asrStatus.ready}
               >
-                <Button icon={<UploadOutlined />} loading={testingAsr} disabled={testingAsr || !asrStatus.enabled}>
-                  Test ASR Upload
+                <Button icon={<UploadOutlined />} loading={testingAsr} disabled={testingAsr || !asrStatus.ready}>
+                  {copy.asr.testUpload}
                 </Button>
               </Upload>
-              <Button onClick={loadAsrStatus}>Reset to Current</Button>
+              <Button onClick={loadAsrStatus}>{copy.resetToCurrent}</Button>
             </Space>
 
             {asrTestResult && (
-              <Card size="small" style={{ marginTop: 16 }} title={<Space><ExperimentOutlined />ASR Test Result</Space>}>
+              <Card size="small" style={{ marginTop: 16 }} title={<Space><ExperimentOutlined />{copy.asr.testResult}</Space>}>
                 {asrTestResult.error ? (
                   <Tag color="red">{asrTestResult.error}</Tag>
                 ) : (
                   <Descriptions size="small" column={1}>
-                    <Descriptions.Item label="Transcript">{asrTestResult.text || '-'}</Descriptions.Item>
-                    <Descriptions.Item label="Provider">{asrTestResult.provider || '-'}</Descriptions.Item>
-                    <Descriptions.Item label="Model">{asrTestResult.model || '-'}</Descriptions.Item>
-                    <Descriptions.Item label="Language">{asrTestResult.language || '-'}</Descriptions.Item>
+                    <Descriptions.Item label={copy.asr.transcript}>{asrTestResult.text || '-'}</Descriptions.Item>
+                    <Descriptions.Item label={copy.rag.provider}>{asrTestResult.provider || '-'}</Descriptions.Item>
+                    <Descriptions.Item label={copy.asr.model}>{asrTestResult.model || '-'}</Descriptions.Item>
+                    <Descriptions.Item label={copy.asr.language}>{asrTestResult.language || '-'}</Descriptions.Item>
                   </Descriptions>
                 )}
               </Card>
@@ -459,7 +693,7 @@ export default function SettingsPage() {
         </Spin>
       </Card>
 
-      <Divider orientation="left">Presets</Divider>
+      <Divider orientation="left">{copy.presets.title}</Divider>
       <Spin spinning={loadingPresets}>
         <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
           {Object.entries(presets).map(([key, preset]) => (
@@ -475,7 +709,7 @@ export default function SettingsPage() {
                     {PRESET_ICONS[key]}
                     <span>{preset.name}</span>
                     {activePreset === key && (
-                      <Tag color="success" icon={<CheckCircleOutlined />}>Active</Tag>
+                      <Tag color="success" icon={<CheckCircleOutlined />}>{copy.active}</Tag>
                     )}
                   </Space>
                 }
@@ -488,22 +722,22 @@ export default function SettingsPage() {
                     onClick={() => handleApplyPreset(key)}
                     style={{ borderColor: PRESET_COLORS[key], color: activePreset === key ? undefined : undefined }}
                   >
-                    {activePreset === key ? 'Re-apply' : 'Apply'}
+                    {activePreset === key ? copy.reapply : copy.apply}
                   </Button>,
                 ]}
               >
                 <p style={{ color: '#666', marginBottom: 12 }}>{preset.description}</p>
                 <Descriptions column={1} size="small" colon>
-                  <Descriptions.Item label="Retrieval Top-K">{preset.retrieval_top_k}</Descriptions.Item>
-                  <Descriptions.Item label="LLM Temperature">{preset.llm_temperature}</Descriptions.Item>
-                  <Descriptions.Item label="LLM Max Tokens">{preset.llm_max_tokens}</Descriptions.Item>
-                  <Descriptions.Item label="LLM Timeout">{(preset.llm_timeout_ms / 1000).toFixed(0)}s</Descriptions.Item>
-                  <Descriptions.Item label="Tool Retries">{preset.tool_max_retries}</Descriptions.Item>
-                  <Descriptions.Item label="Keyword Weight">{preset.keyword_weight}</Descriptions.Item>
-                  <Descriptions.Item label="HNSW efSearch">{preset.ef_search}</Descriptions.Item>
-                  <Descriptions.Item label="Reranker">
+                  <Descriptions.Item label={copy.presets.retrievalTopK}>{preset.retrieval_top_k}</Descriptions.Item>
+                  <Descriptions.Item label={copy.presets.llmTemperature}>{preset.llm_temperature}</Descriptions.Item>
+                  <Descriptions.Item label={copy.presets.llmMaxTokens}>{preset.llm_max_tokens}</Descriptions.Item>
+                  <Descriptions.Item label={copy.presets.llmTimeout}>{(preset.llm_timeout_ms / 1000).toFixed(0)}s</Descriptions.Item>
+                  <Descriptions.Item label={copy.presets.toolRetries}>{preset.tool_max_retries}</Descriptions.Item>
+                  <Descriptions.Item label={copy.presets.keywordWeight}>{preset.keyword_weight}</Descriptions.Item>
+                  <Descriptions.Item label={copy.presets.hnswEfSearch}>{preset.ef_search}</Descriptions.Item>
+                  <Descriptions.Item label={copy.presets.reranker}>
                     <Tag color={preset.reranker_enabled ? 'green' : 'default'}>
-                      {preset.reranker_enabled ? 'Enabled' : 'Disabled'}
+                      {preset.reranker_enabled ? copy.enabled : copy.disabled}
                     </Tag>
                   </Descriptions.Item>
                 </Descriptions>
@@ -514,7 +748,7 @@ export default function SettingsPage() {
       </Spin>
 
       {/* ── Current Config ───────────────────────────────── */}
-      <Divider orientation="left">Current Runtime Configuration</Divider>
+      <Divider orientation="left">{copy.current.title}</Divider>
       <Spin spinning={loadingConfig}>
         <Card style={{ marginBottom: 24 }}>
           <Descriptions
@@ -524,13 +758,13 @@ export default function SettingsPage() {
             title={
               <Space>
                 <SettingOutlined />
-                <span>Active Configuration</span>
+                <span>{copy.current.activeConfiguration}</span>
                 {activePreset ? (
                   <Tag color={PRESET_COLORS[activePreset] || 'blue'}>
                     {presets[activePreset]?.name || activePreset}
                   </Tag>
                 ) : (
-                  <Tag color="orange">Custom</Tag>
+                  <Tag color="orange">{copy.custom}</Tag>
                 )}
               </Space>
             }
@@ -540,7 +774,7 @@ export default function SettingsPage() {
               .map(([key, value]) => (
                 <Descriptions.Item key={key} label={key}>
                   {typeof value === 'boolean' ? (
-                    <Tag color={value ? 'green' : 'default'}>{value ? 'Enabled' : 'Disabled'}</Tag>
+                    <Tag color={value ? 'green' : 'default'}>{value ? copy.enabled : copy.disabled}</Tag>
                   ) : (
                     String(value)
                   )}
@@ -551,7 +785,7 @@ export default function SettingsPage() {
       </Spin>
 
       {/* ── Advanced Tuning ──────────────────────────────── */}
-      <Divider orientation="left">Advanced Tuning</Divider>
+      <Divider orientation="left">{copy.advanced.title}</Divider>
       <Card>
         <Form form={form} layout="vertical">
           <Row gutter={24}>
@@ -615,10 +849,10 @@ export default function SettingsPage() {
 
           <Space>
             <Button type="primary" onClick={handleSaveConfig} loading={savingConfig}>
-              Save Configuration
+              {copy.advanced.save}
             </Button>
             <Button onClick={loadCurrentConfig}>
-              Reset to Current
+              {copy.resetToCurrent}
             </Button>
           </Space>
         </Form>

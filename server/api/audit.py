@@ -14,6 +14,8 @@ from server.middleware.auth import get_current_user
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
+RETRIEVAL_EVENT_TYPES = ("retrieval", "pre_retrieval")
+
 
 @router.get("/traces/{trace_id}")
 async def get_trace(trace_id: str, db: AsyncSession = Depends(get_db)):
@@ -134,7 +136,7 @@ async def get_metrics(
     # Retrieval events
     retrieval_q = await db.execute(
         select(func.count(AuditTrace.id)).where(
-            AuditTrace.event_type == "retrieval", *base_filter
+            AuditTrace.event_type.in_(RETRIEVAL_EVENT_TYPES), *base_filter
         )
     )
     retrieval_count = retrieval_q.scalar() or 0
@@ -142,7 +144,7 @@ async def get_metrics(
     # Avg retrieval latency
     avg_retrieval_lat = await db.execute(
         select(func.avg(AuditTrace.latency_ms)).where(
-            AuditTrace.event_type == "retrieval", *base_filter
+            AuditTrace.event_type.in_(RETRIEVAL_EVENT_TYPES), *base_filter
         )
     )
     avg_retrieval_latency = avg_retrieval_lat.scalar() or 0

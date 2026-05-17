@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, Card, Descriptions, Empty, Input, Select, Space, Tabs, message } from 'antd';
+import { Alert, Button, Card, Descriptions, Empty, Input, Select, Space, Steps, Tabs, message } from 'antd';
 import { ExperimentOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { invokeApi } from '../../api';
 import type { Agent, InvokeResponse } from '../../types';
@@ -12,8 +12,10 @@ import {
   buildInvokePayload,
   buildJsInvoke,
   buildSseSnippet,
+  buildWorkflowFormSubmitPayload,
   formatJson,
   responseContract,
+  workflowCardContract,
 } from './snippets';
 
 const { TextArea } = Input;
@@ -98,7 +100,7 @@ export default function InboundApiTab({ apiBase, agents, selectedAgentId, onSele
         )}
       </Card>
 
-      <Card title="Live Invoke Test" style={{ marginBottom: 16 }}>
+      <Card title={copy.sectionTitles.liveInvokeTest} style={{ marginBottom: 16 }}>
         <TextArea
           rows={4}
           value={testMessage}
@@ -126,7 +128,33 @@ export default function InboundApiTab({ apiBase, agents, selectedAgentId, onSele
         )}
       </Card>
 
-      <Card title="Generated Client Snippets" style={{ marginBottom: 16 }}>
+      <Card title={copy.customerAppFlow.title || 'Customer App Integration Flow'} style={{ marginBottom: 16 }}>
+        <Alert type="info" showIcon message={copy.customerAppFlow.description} style={{ marginBottom: 16 }} />
+        <Steps
+          direction="vertical"
+          size="small"
+          items={copy.customerAppFlow.steps.map((step) => ({ title: step }))}
+          style={{ marginBottom: 16 }}
+        />
+        <Tabs
+          items={[
+            {
+              key: 'workflow-card',
+              label: copy.customerAppFlow.workflowCardTitle,
+              children: <IntegrationCodeBlock value={formatJson(workflowCardContract)} copy={copy} />,
+            },
+            {
+              key: 'form-submit',
+              label: copy.customerAppFlow.formSubmitTitle,
+              children: (
+                <IntegrationCodeBlock value={formatJson(buildWorkflowFormSubmitPayload(selectedAgentId))} copy={copy} />
+              ),
+            },
+          ]}
+        />
+      </Card>
+
+      <Card title={copy.sectionTitles.clientSnippets} style={{ marginBottom: 16 }}>
         <Tabs
           items={snippets.map((snippet) => ({
             key: snippet.key,
@@ -136,7 +164,7 @@ export default function InboundApiTab({ apiBase, agents, selectedAgentId, onSele
         />
       </Card>
 
-      <Card title="Response Contract">
+      <Card title={copy.sectionTitles.responseContract}>
         <IntegrationCodeBlock value={formatJson(responseContract)} copy={copy} />
       </Card>
     </div>

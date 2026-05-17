@@ -1,5 +1,5 @@
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Menu, Button } from 'antd';
+import { Layout, Menu, Button, Space, Tag } from 'antd';
 import { useTranslation } from 'react-i18next';
 import {
   RobotOutlined,
@@ -59,46 +59,59 @@ export default function App() {
     { key: '/health', icon: <HeartOutlined />, label: t('nav.health') },
   ];
 
+  const currentPath = menuItems.some((item) => item.key === location.pathname)
+    ? location.pathname
+    : '/';
+  const currentItem = menuItems.find((item) => item.key === currentPath);
+
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider theme="dark" width={200}>
-        <div style={{ height: 48, margin: 16, color: '#fff', fontSize: 18, fontWeight: 'bold', textAlign: 'center', lineHeight: '48px' }}>
-          Aezab Console
+    <Layout className="aezab-shell">
+      <Sider theme="dark" width={216} className="aezab-sidebar">
+        <div className="aezab-brand">
+          <div className="aezab-brand-mark">A</div>
+          <div>
+            <div className="aezab-brand-title">Aezab</div>
+            <div className="aezab-brand-subtitle">{t('shell.brandSubtitle')}</div>
+          </div>
         </div>
         <Menu
           theme="dark"
           mode="inline"
-          selectedKeys={[location.pathname]}
+          selectedKeys={[currentPath]}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
         />
       </Sider>
       <Layout>
-        <Header style={{ background: '#fff', padding: '0 24px', fontSize: 16, fontWeight: 500, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span>Aezab Agent Console</span>
-          <Button
-            type="text"
-            icon={<GlobalOutlined />}
-            onClick={toggleLang}
-          >
-            {i18n.language === 'zh' ? 'EN' : '中文'}
-          </Button>
+        <Header className="aezab-topbar">
+          <div>
+            <div className="aezab-topbar-title">{currentItem?.label || t('shell.console')}</div>
+            <div className="aezab-topbar-subtitle">{t('shell.topbarSubtitle')}</div>
+          </div>
+          <Space size={12}>
+            <Tag color="success">{t('shell.localReady')}</Tag>
+            <Button type="text" icon={<GlobalOutlined />} onClick={toggleLang}>
+              {i18n.language === 'zh' ? 'EN' : '中文'}
+            </Button>
+          </Space>
         </Header>
-        <Content style={{ margin: 24, padding: 24, background: '#fff', borderRadius: 8 }}>
-          <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/playground" element={<PlaygroundPage />} />
-            <Route path="/integrations" element={<IntegrationsPage />} />
-            <Route path="/agents" element={<AgentsPage />} />
-            <Route path="/workflows" element={<WorkflowsPage />} />
-            <Route path="/knowledge" element={<KnowledgePage />} />
-            <Route path="/skills" element={<SkillsPage />} />
-            <Route path="/tools" element={<ToolsPage />} />
-            <Route path="/llm-configs" element={<LLMConfigsPage />} />
-            <Route path="/audit" element={<AuditPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/health" element={<HealthPage />} />
-          </Routes>
+        <Content className="aezab-content">
+          <div className="aezab-page">
+            <Routes>
+              <Route path="/" element={<DashboardPage />} />
+              <Route path="/playground" element={<PlaygroundPage />} />
+              <Route path="/integrations" element={<IntegrationsPage />} />
+              <Route path="/agents" element={<AgentsPage />} />
+              <Route path="/workflows" element={<WorkflowsPage />} />
+              <Route path="/knowledge" element={<KnowledgePage />} />
+              <Route path="/skills" element={<SkillsPage />} />
+              <Route path="/tools" element={<ToolsPage />} />
+              <Route path="/llm-configs" element={<LLMConfigsPage />} />
+              <Route path="/audit" element={<AuditPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/health" element={<HealthPage />} />
+            </Routes>
+          </div>
         </Content>
       </Layout>
     </Layout>

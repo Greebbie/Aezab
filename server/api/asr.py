@@ -15,6 +15,8 @@ from server.engine.asr import (
     config_from_settings,
     effective_max_file_mb,
     get_asr_config_metadata,
+    is_asr_ready,
+    asr_needs_api_key,
     save_asr_config_update,
 )
 from server.middleware.auth import get_current_user
@@ -30,11 +32,13 @@ async def asr_status():
     config = config_from_settings()
     return ASRStatusResponse(
         enabled=config.provider != "disabled",
+        ready=is_asr_ready(config),
         provider=config.provider,
         base_url=config.base_url,
         model=config.model,
         max_file_mb=effective_max_file_mb(config),
         has_api_key=bool(config.api_key),
+        needs_api_key=asr_needs_api_key(config),
         uses_llm_api_key=asr_uses_llm_api_key(config),
     )
 
@@ -43,11 +47,13 @@ def _config_response(config) -> ASRConfigResponse:
     metadata = get_asr_config_metadata()
     return ASRConfigResponse(
         enabled=config.provider != "disabled",
+        ready=is_asr_ready(config),
         provider=config.provider,
         base_url=config.base_url,
         model=config.model,
         max_file_mb=effective_max_file_mb(config),
         has_api_key=bool(config.api_key),
+        needs_api_key=asr_needs_api_key(config),
         uses_llm_api_key=asr_uses_llm_api_key(config),
         timeout=config.timeout,
         funasr_path=config.funasr_path,
@@ -56,6 +62,7 @@ def _config_response(config) -> ASRConfigResponse:
         has_saved_config=metadata["has_saved_config"],
         has_saved_api_key=metadata["has_saved_api_key"],
         api_key_source=metadata["api_key_source"],
+        config_source=metadata["config_source"],
     )
 
 

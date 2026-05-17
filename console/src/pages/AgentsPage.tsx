@@ -11,6 +11,8 @@ import {
   workflowApi, toolApi, knowledgeApi, llmConfigApi,
 } from '../api';
 import { AgentWizard } from '../components/agent';
+import { HelpLabel, HelpTooltip } from '../components/shared';
+import { useTranslation } from 'react-i18next';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -23,6 +25,7 @@ interface Capabilities { knowledge: KnowledgeCap[]; workflows: WorkflowCap[]; to
 const emptyCaps = (): Capabilities => ({ knowledge: [], workflows: [], tools: [] });
 
 export default function AgentsPage() {
+  const { t } = useTranslation();
   const [agents, setAgents] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -290,7 +293,12 @@ export default function AgentsPage() {
       items={[
         {
           key: 'advanced',
-          label: 'Agent-specific instruction (advanced)',
+          label: (
+            <HelpLabel
+              label="Agent-specific instruction (advanced)"
+              help={t('agents.help.advancedInstruction')}
+            />
+          ),
           children: (
             <Space direction="vertical" style={{ width: '100%' }} size={6}>
               <Text type="secondary">
@@ -411,14 +419,19 @@ export default function AgentsPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="Agent capability source of truth"
+        message={(
+          <>
+            Agent capability source of truth
+            <HelpTooltip content={t('agents.help.capabilitySource')} />
+          </>
+        )}
         description="Use this tab to decide what the agent can access at runtime. Resource descriptions drive when the Agent calls a capability; advanced Agent-specific instructions only add special rules for this Agent. Integrations is the developer workbench, and shortcut bindings write back here."
       />
 
       {/* Knowledge QA */}
       <Card
         size="small"
-        title="知识问答"
+        title={<HelpLabel label="知识问答" help={t('agents.help.knowledgeCap')} />}
         extra={<Button size="small" icon={<PlusOutlined />} onClick={addKnowledge}>Add</Button>}
         style={{ marginBottom: 16 }}
       >
@@ -447,7 +460,9 @@ export default function AgentsPage() {
               <Button icon={<MinusCircleOutlined />} danger size="small" onClick={() => removeKnowledge(idx)} />
             </div>
             <Space direction="vertical" style={{ width: '100%', marginBottom: 8 }} size={4}>
-              <Text type="secondary">Resource description</Text>
+              <Text type="secondary">
+                <HelpLabel label="Resource description" help={t('agents.help.resourceDescription')} />
+              </Text>
               {k.source_ids.length > 0 ? (
                 sources
                   .filter((source: any) => k.source_ids.includes(source.id))
@@ -472,7 +487,7 @@ export default function AgentsPage() {
       {/* Workflows */}
       <Card
         size="small"
-        title="工作流"
+        title={<HelpLabel label="工作流" help={t('agents.help.workflowCap')} />}
         extra={<Button size="small" icon={<PlusOutlined />} onClick={addWorkflow}>Add</Button>}
         style={{ marginBottom: 16 }}
       >
@@ -497,7 +512,9 @@ export default function AgentsPage() {
               const workflow = workflows.find((wf: any) => wf.id === w.workflow_id);
               return (
                 <Space direction="vertical" style={{ width: '100%', marginBottom: 8 }} size={4}>
-                  <Text type="secondary">Resource description</Text>
+                  <Text type="secondary">
+                    <HelpLabel label="Resource description" help={t('agents.help.resourceDescription')} />
+                  </Text>
                   <Text type="secondary">
                     {workflow?.description || workflow?.name || 'Select a workflow; its name, description, and steps tell the Agent when to start it.'}
                   </Text>
@@ -516,21 +533,21 @@ export default function AgentsPage() {
       {/* Tool Calling */}
       <Card
         size="small"
-        title="工具调用"
+        title={<HelpLabel label="工具调用" help={t('agents.help.toolCap')} />}
         extra={<Button size="small" icon={<PlusOutlined />} onClick={addTool}>Add</Button>}
         style={{ marginBottom: 16 }}
       >
         {capabilities.tools.length === 0 && (
           <Text type="secondary">暂无工具绑定，点击"添加"绑定工具。</Text>
         )}
-        {capabilities.tools.map((t, idx) => (
+        {capabilities.tools.map((toolCap, idx) => (
           <div key={idx} style={{ marginBottom: 12, padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
             <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
               <Select
                 mode="multiple"
                 style={{ flex: 1 }}
                 placeholder="Select tools"
-                value={t.tool_ids}
+                value={toolCap.tool_ids}
                 onChange={v => updateTool(idx, 'tool_ids', v)}
                 options={tools.map((tl: any) => ({ value: tl.id, label: `${tl.name}` }))}
                 optionFilterProp="label"
@@ -538,10 +555,12 @@ export default function AgentsPage() {
               <Button icon={<MinusCircleOutlined />} danger size="small" onClick={() => removeTool(idx)} />
             </div>
             <Space direction="vertical" style={{ width: '100%', marginBottom: 8 }} size={4}>
-              <Text type="secondary">Resource description</Text>
-              {t.tool_ids.length > 0 ? (
+              <Text type="secondary">
+                <HelpLabel label="Resource description" help={t('agents.help.resourceDescription')} />
+              </Text>
+              {toolCap.tool_ids.length > 0 ? (
                 tools
-                  .filter((tool: any) => t.tool_ids.includes(tool.id))
+                  .filter((tool: any) => toolCap.tool_ids.includes(tool.id))
                   .map((tool: any) => (
                     <Text key={tool.id} type="secondary">
                       {tool.name} - {tool.description || 'No description yet; add one in Tools so the Agent knows when to call it.'}
@@ -552,7 +571,7 @@ export default function AgentsPage() {
               )}
             </Space>
             {renderAdvancedInstruction(
-              t.description,
+              toolCap.description,
               value => updateTool(idx, 'description', value),
               'Example: For this Agent, call these tools only after the user confirms the action.',
             )}

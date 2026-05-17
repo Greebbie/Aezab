@@ -299,6 +299,20 @@ def effective_max_file_mb(config: ASRConfig) -> int:
     return config.max_file_mb
 
 
+def asr_needs_api_key(config: ASRConfig) -> bool:
+    return config.provider in ("dashscope_qwen", "openai_compatible")
+
+
+def is_asr_ready(config: ASRConfig) -> bool:
+    if config.provider == "disabled":
+        return False
+    if not config.base_url or not config.model:
+        return False
+    if asr_needs_api_key(config) and not config.api_key:
+        return False
+    return True
+
+
 def asr_uses_llm_api_key(config: ASRConfig) -> bool:
     overrides = _load_asr_config_overrides()
     if "api_key" in overrides or settings.asr_api_key:
@@ -326,6 +340,7 @@ def get_asr_config_metadata() -> dict[str, Any]:
         "has_saved_config": bool(overrides),
         "has_saved_api_key": has_saved_api_key,
         "api_key_source": api_key_source,
+        "config_source": "saved_config" if overrides else "environment",
     }
 
 

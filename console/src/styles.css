@@ -1,0 +1,247 @@
+:root {
+  color: #182033;
+  background: #f4f6f9;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: #f4f6f9;
+}
+
+.aezab-shell {
+  min-height: 100vh;
+  background: #f4f6f9;
+}
+
+.aezab-sidebar {
+  border-right: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 2px 0 14px rgba(15, 23, 42, 0.08);
+}
+
+.aezab-brand {
+  height: 64px;
+  margin: 0;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #fff;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.aezab-brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  color: #111827;
+  font-weight: 800;
+}
+
+.aezab-brand-title {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 18px;
+}
+
+.aezab-brand-subtitle {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.aezab-topbar {
+  height: 58px;
+  line-height: normal;
+  padding: 0 24px;
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  backdrop-filter: blur(8px);
+}
+
+.aezab-topbar-title {
+  font-size: 14px;
+  color: #182033;
+  font-weight: 700;
+}
+
+.aezab-topbar-subtitle {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.aezab-content {
+  margin: 0;
+  padding: 24px;
+  background: #f4f6f9;
+  min-height: calc(100vh - 58px);
+}
+
+.aezab-page {
+  max-width: 1680px;
+  margin: 0 auto;
+}
+
+.aezab-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.aezab-page-header > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.aezab-page-header > .ant-space {
+  justify-content: flex-end;
+}
+
+.aezab-page-eyebrow {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.aezab-page-title {
+  margin: 0;
+  color: #111827;
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 750;
+}
+
+.aezab-page-description {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 21px;
+  max-width: 760px;
+}
+
+.aezab-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.aezab-stat-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.aezab-stat-label {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+
+.aezab-stat-value {
+  color: #111827;
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 760;
+}
+
+.aezab-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.aezab-card-clickable {
+  height: 100%;
+  border-color: #e2e8f0;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.aezab-card-clickable:hover {
+  border-color: #2563eb;
+  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.08);
+  transform: translateY(-1px);
+}
+
+.aezab-table-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.aezab-muted {
+  color: #64748b;
+}
+
+.aezab-help-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.aezab-help-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  cursor: help;
+  font-size: 13px;
+  line-height: 1;
+  transition: color 0.16s ease;
+}
+
+.aezab-help-icon:hover {
+  color: #2563eb;
+}
+
+.aezab-help-tooltip {
+  max-width: 340px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.aezab-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 900px) {
+  .aezab-page-header,
+  .aezab-toolbar,
+  .aezab-topbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .aezab-content {
+    padding: 16px;
+  }
+}

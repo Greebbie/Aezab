@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import re
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.config import settings
 from server.db import get_db
 from server.models.knowledge import KnowledgeSource, KnowledgeChunk
 from server.schemas.knowledge import (
@@ -202,8 +205,8 @@ async def search(body: RetrievalRequest, db: AsyncSession = Depends(get_db)):
     vector_store = None
     if body.use_rag_channel:
         try:
-            from server.engine.vector_store import get_vector_store
-            vector_store = get_vector_store()
+            from server.engine.vector_store import get_vector_store_if_initialized
+            vector_store = get_vector_store_if_initialized()
         except Exception as exc:
             logger.warning("Vector store unavailable for search: %s", exc)
     retriever = KnowledgeRetriever(
@@ -221,7 +224,14 @@ async def search(body: RetrievalRequest, db: AsyncSession = Depends(get_db)):
 
 # ── Document Upload ─────────────────────────────────────────────
 
-ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}
+ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".csv", ".xlsx"}
+_TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030")
+_UTF16_ENCODINGS = ("utf-16", "utf-16-le", "utf-16-be")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _max_upload_bytes() -> int:
+    return max(settings.knowledge_max_upload_mb, 1) * 1024 * 1024
 
 
 def _sanitize_filename(filename: str) -> str:
@@ -253,6 +263,69 @@ async def _unique_source_name(db: AsyncSession, base_name: str, tenant_id: str) 
     raise HTTPException(409, "Unable to generate a unique knowledge source name")
 
 
+def _decode_text_bytes(raw_bytes: bytes, file_label: str) -> str:
+    """Decode user-provided text while rejecting likely binary content."""
+    encodings = list(_TEXT_ENCODINGS)
+    if _has_utf16_bom(raw_bytes):
+        encodings = list(_UTF16_ENCODINGS) + encodings
+    elif _looks_like_utf16(raw_bytes):
+        encodings += list(_UTF16_ENCODINGS)
+
+    for encoding in encodings:
+        try:
+            text = raw_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if _looks_like_binary_text(text):
+            continue
+        cleaned = _clean_extracted_text(text)
+        return _require_extracted_text(
+            cleaned,
+            f"{file_label} is empty after text extraction",
+        )
+
+    raise HTTPException(
+        400,
+        f"{file_label} must be plain text encoded as UTF-8, GB18030, or UTF-16",
+    )
+
+
+def _has_utf16_bom(raw_bytes: bytes) -> bool:
+    return raw_bytes.startswith((b"\xff\xfe", b"\xfe\xff"))
+
+
+def _looks_like_utf16(raw_bytes: bytes) -> bool:
+    sample = raw_bytes[:2048]
+    if len(sample) < 4:
+        return False
+    even_positions = sample[0::2]
+    odd_positions = sample[1::2]
+    even_nul_ratio = even_positions.count(0) / max(len(even_positions), 1)
+    odd_nul_ratio = odd_positions.count(0) / max(len(odd_positions), 1)
+    return max(even_nul_ratio, odd_nul_ratio) > 0.25
+
+
+def _clean_extracted_text(text: str) -> str:
+    text = text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    text = _CONTROL_CHAR_RE.sub(" ", text)
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _looks_like_binary_text(text: str) -> bool:
+    if not text:
+        return False
+    control_count = len(_CONTROL_CHAR_RE.findall(text))
+    return control_count / max(len(text), 1) > 0.02
+
+
+def _require_extracted_text(text: str, empty_message: str) -> str:
+    cleaned = _clean_extracted_text(text)
+    if not cleaned.strip():
+        raise HTTPException(400, empty_message)
+    return cleaned
+
+
 def _extract_text_from_pdf(raw_bytes: bytes) -> str:
     """Extract text from PDF bytes using pypdf."""
     try:
@@ -263,13 +336,31 @@ def _extract_text_from_pdf(raw_bytes: bytes) -> str:
             "PDF support requires pypdf. Install with: pip install 'aezab[rag]'",
         )
     import io
-    reader = PdfReader(io.BytesIO(raw_bytes))
+
+    try:
+        reader = PdfReader(io.BytesIO(raw_bytes))
+    except Exception as exc:
+        raise HTTPException(400, "Invalid PDF file") from exc
+    if reader.is_encrypted:
+        try:
+            decrypted = reader.decrypt("")
+        except Exception as exc:
+            raise HTTPException(400, "Encrypted PDF files are not supported") from exc
+        if not decrypted:
+            raise HTTPException(400, "Encrypted PDF files are not supported")
+
     pages = []
-    for page in reader.pages:
-        text = page.extract_text()
-        if text:
-            pages.append(text)
-    return "\n\n".join(pages)
+    try:
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                pages.append(text)
+    except Exception as exc:
+        raise HTTPException(400, "Unable to extract text from PDF file") from exc
+    return _require_extracted_text(
+        "\n\n".join(pages),
+        "PDF file contains no extractable text. Run OCR before uploading scanned PDFs.",
+    )
 
 
 def _extract_text_from_docx(raw_bytes: bytes) -> str:
@@ -282,9 +373,185 @@ def _extract_text_from_docx(raw_bytes: bytes) -> str:
             "DOCX support requires python-docx. Install with: pip install 'aezab[rag]'",
         )
     import io
-    doc = DocxDocument(io.BytesIO(raw_bytes))
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    return "\n\n".join(paragraphs)
+
+    try:
+        doc = DocxDocument(io.BytesIO(raw_bytes))
+    except Exception as exc:
+        raise HTTPException(400, "Invalid DOCX file") from exc
+
+    sections = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    for index, table in enumerate(doc.tables, start=1):
+        parsed_rows: list[tuple[int, list[str]]] = []
+        for row_number, row in enumerate(table.rows, start=1):
+            cells = _normalize_table_row(cell.text for cell in row.cells)
+            if cells:
+                parsed_rows.append((row_number, cells))
+        rows = _format_table_rows(parsed_rows)
+        if rows:
+            sections.append(f"[Table {index}]\n" + "\n".join(rows))
+    return _require_extracted_text(
+        "\n\n".join(sections),
+        "DOCX file contains no extractable text. Use real text instead of screenshots.",
+    )
+
+
+def _extract_text_from_csv(raw_bytes: bytes) -> str:
+    """Extract readable text from CSV bytes."""
+    import csv
+    import io
+
+    text = _decode_text_bytes(raw_bytes, "CSV file")
+
+    sample = text[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+
+    parsed_rows: list[tuple[int, list[str]]] = []
+    reader = csv.reader(io.StringIO(text), dialect)
+    for row_number, row in enumerate(reader, start=1):
+        cells = _normalize_table_row(row)
+        if not cells:
+            continue
+        parsed_rows.append((row_number, cells))
+    return _require_extracted_text(
+        "\n".join(_format_table_rows(parsed_rows)),
+        "CSV file contains no readable rows",
+    )
+
+
+def _extract_text_from_xlsx(raw_bytes: bytes) -> str:
+    """Extract readable text from XLSX bytes using openpyxl."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise HTTPException(
+            400,
+            "XLSX support requires openpyxl. Install with: pip install 'aezab[rag]'",
+        )
+
+    import io
+
+    try:
+        workbook = load_workbook(io.BytesIO(raw_bytes), read_only=True, data_only=True)
+    except Exception as exc:
+        raise HTTPException(400, "Invalid XLSX file") from exc
+
+    try:
+        sections: list[str] = []
+        for sheet in workbook.worksheets:
+            parsed_rows: list[tuple[int, list[str]]] = []
+            for row_number, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+                cells = _normalize_table_row(row)
+                if not cells:
+                    continue
+                parsed_rows.append((row_number, cells))
+            rows = _format_table_rows(parsed_rows)
+            if rows:
+                sections.append(f"[Sheet: {sheet.title}]\n" + "\n".join(rows))
+        return _require_extracted_text(
+            "\n\n".join(sections),
+            "XLSX file contains no readable cells",
+        )
+    finally:
+        workbook.close()
+
+
+def _extract_text_by_extension(raw_bytes: bytes, ext: str) -> str:
+    if ext == ".pdf":
+        return _extract_text_from_pdf(raw_bytes)
+    if ext == ".docx":
+        return _extract_text_from_docx(raw_bytes)
+    if ext == ".csv":
+        return _extract_text_from_csv(raw_bytes)
+    if ext == ".xlsx":
+        return _extract_text_from_xlsx(raw_bytes)
+    if ext in {".txt", ".md"}:
+        return _decode_text_bytes(raw_bytes, "Text file")
+    raise HTTPException(
+        400,
+        f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+    )
+
+
+def _normalize_table_row(row: Any) -> list[str]:
+    """Convert a CSV/XLSX row to stripped cell text while preserving columns."""
+    cells: list[str] = []
+    for value in row:
+        if value is None:
+            cells.append("")
+            continue
+        text = str(value).strip()
+        cells.append(text)
+    while cells and not cells[-1]:
+        cells.pop()
+    return cells
+
+
+def _format_table_row(cells: list[str], headers: list[str] | None, row_number: int) -> str:
+    """Format a table row as header-aware text for retrieval."""
+    if not any(cells):
+        return ""
+    if not headers:
+        pairs = [
+            f"Column {idx + 1}: {cell}"
+            for idx, cell in enumerate(cells)
+            if cell
+        ]
+        return f"Row {row_number}: " + " | ".join(pairs)
+
+    pairs: list[str] = []
+    for idx, cell in enumerate(cells):
+        if not cell:
+            continue
+        header = (
+            headers[idx].strip()
+            if idx < len(headers) and headers[idx].strip()
+            else f"Column {idx + 1}"
+        )
+        pairs.append(f"{header}: {cell}")
+    return f"Row {row_number}: " + " | ".join(pairs) if pairs else ""
+
+
+def _format_table_rows(parsed_rows: list[tuple[int, list[str]]]) -> list[str]:
+    if not parsed_rows:
+        return []
+
+    _, first_cells = parsed_rows[0]
+    headers = first_cells if _looks_like_header_row(first_cells) else None
+    rows: list[str] = []
+    start_index = 0
+
+    if headers:
+        rows.append("Headers: " + " | ".join(headers))
+        start_index = 1
+
+    for row_number, cells in parsed_rows[start_index:]:
+        line = _format_table_row(
+            cells,
+            headers=headers,
+            row_number=row_number,
+        )
+        if line:
+            rows.append(line)
+    return rows
+
+
+def _looks_like_header_row(cells: list[str]) -> bool:
+    non_empty = [cell.strip() for cell in cells if cell.strip()]
+    if len(non_empty) < 2:
+        return False
+    if len({cell.casefold() for cell in non_empty}) != len(non_empty):
+        return False
+    if any(len(cell) > 40 for cell in non_empty):
+        return False
+    return not any(_looks_like_table_value(cell) for cell in non_empty)
+
+
+def _looks_like_table_value(cell: str) -> bool:
+    value_markers = "-/\\:@$%0123456789"
+    return any(marker in cell for marker in value_markers)
 
 
 # Sentence-ending punctuation for recursive splitting
@@ -478,18 +745,18 @@ async def upload_document(
         await db.flush()
         source_id = source.id
 
-    # ── Read file content ────────────────────────────────────────
-    raw_bytes = await file.read()
+    # ── Read and parse file content ──────────────────────────────
+    max_bytes = _max_upload_bytes()
+    raw_bytes = await file.read(max_bytes + 1)
+    if len(raw_bytes) > max_bytes:
+        raise HTTPException(
+            413,
+            f"File is too large. Max knowledge upload size is {settings.knowledge_max_upload_mb} MB",
+        )
+    if not raw_bytes:
+        raise HTTPException(400, "Uploaded file is empty")
 
-    if ext == ".pdf":
-        text = _extract_text_from_pdf(raw_bytes)
-    elif ext == ".docx":
-        text = _extract_text_from_docx(raw_bytes)
-    else:
-        try:
-            text = raw_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            raise HTTPException(400, "File must be UTF-8 encoded text")
+    text = _extract_text_by_extension(raw_bytes, ext)
 
     if not text.strip():
         raise HTTPException(400, "Uploaded file is empty")
@@ -507,7 +774,12 @@ async def upload_document(
             entity_key=entity_key,
             domain=domain,
             chunk_index=idx,
-            metadata_={"filename": safe_name, "chunk_size": chunk_size},
+            metadata_={
+                "filename": safe_name,
+                "file_ext": ext,
+                "file_size_bytes": len(raw_bytes),
+                "chunk_size": chunk_size,
+            },
         )
         db.add(chunk)
         created_chunks.append(chunk)

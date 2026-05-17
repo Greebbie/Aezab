@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Alert, Button, Card, Col, Descriptions, Row, Space, Spin, Tabs, Typography } from 'antd';
 import { ApiOutlined, AudioOutlined, AuditOutlined, LinkOutlined, ReloadOutlined, SendOutlined } from '@ant-design/icons';
+import { HelpLabel, PageHeader } from '../components/shared';
 import { getIntegrationCopy } from './integrations/copy';
 import InboundApiTab from './integrations/InboundApiTab';
 import OutboundToolsTab from './integrations/OutboundToolsTab';
@@ -10,7 +11,7 @@ import TraceDebugTab from './integrations/TraceDebugTab';
 import { useIntegrationData } from './integrations/useIntegrationData';
 import WorkflowWebhooksTab from './integrations/WorkflowWebhooksTab';
 
-const { Paragraph, Text, Title } = Typography;
+const { Paragraph, Text } = Typography;
 
 function getApiBase() {
   if (typeof window === 'undefined') return 'http://localhost:8000/api/v1';
@@ -87,22 +88,22 @@ export default function IntegrationsPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
-        <div>
-          <Title level={3} style={{ marginBottom: 4 }}>
-            {copy.title}
-          </Title>
-          <Text type="secondary">{copy.subtitle}</Text>
-        </div>
-        <Space wrap>
-          <Button icon={<ReloadOutlined />} onClick={reload}>
-            {copy.actions.refresh}
-          </Button>
-          <Button icon={<AuditOutlined />} onClick={() => navigate('/audit')}>
-            {copy.actions.openAudit}
-          </Button>
-        </Space>
-      </div>
+      <PageHeader
+        eyebrow={copy.eyebrow}
+        title={copy.title}
+        description={copy.subtitle}
+        status={copy.integrationMap}
+        actions={(
+          <>
+            <Button icon={<ReloadOutlined />} onClick={reload}>
+              {copy.actions.refresh}
+            </Button>
+            <Button icon={<AuditOutlined />} onClick={() => navigate('/audit')}>
+              {copy.actions.openAudit}
+            </Button>
+          </>
+        )}
+      />
 
       {error ? <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} /> : null}
 
@@ -128,6 +129,7 @@ export default function IntegrationsPage() {
             <Card
               hoverable
               onClick={() => setActiveTab(card.tabKey)}
+              className="aezab-card-clickable"
               style={{
                 height: '100%',
                 borderColor: activeTab === card.tabKey ? '#1677ff' : undefined,
@@ -136,7 +138,12 @@ export default function IntegrationsPage() {
               <Space align="start">
                 {card.icon}
                 <div>
-                  <Text strong>{card.title}</Text>
+                  <Text strong>
+                    <HelpLabel
+                      label={card.title}
+                      help={`${card.help.summary} ${card.help.howTo}`}
+                    />
+                  </Text>
                   <Paragraph type="secondary" style={{ marginBottom: 8 }}>
                     {card.metric}
                   </Paragraph>
@@ -149,11 +156,11 @@ export default function IntegrationsPage() {
         ))}
       </Row>
 
-      <Card style={{ marginBottom: 16 }}>
+      <Card className="aezab-card" style={{ marginBottom: 16 }}>
         <Descriptions column={1} size="small">
-          <Descriptions.Item label={copy.fields.apiBase}>{apiBase}</Descriptions.Item>
-          <Descriptions.Item label={copy.fields.auth}>X-API-Key / Authorization: Bearer</Descriptions.Item>
-          <Descriptions.Item label={copy.fields.swagger}>
+          <Descriptions.Item label={<HelpLabel label={copy.fields.apiBase} help={copy.fieldHelp.apiBase} />}>{apiBase}</Descriptions.Item>
+          <Descriptions.Item label={<HelpLabel label={copy.fields.auth} help={copy.fieldHelp.auth} />}>X-API-Key / Authorization: Bearer</Descriptions.Item>
+          <Descriptions.Item label={<HelpLabel label={copy.fields.swagger} help={copy.fieldHelp.swagger} />}>
             <Button size="small" onClick={() => window.open('/docs', '_blank')}>
               {copy.actions.openDocs}
             </Button>

@@ -101,6 +101,89 @@ _WORKFLOW_EXIT_KEYWORDS = {
     "cancel", "quit", "exit", "abort", "stop",
 }
 
+_WORKFLOW_EXIT_INTENT_KEYWORDS = {
+    "取消", "退出", "结束", "停止", "中止", "终止", "不办了", "不办理了",
+    "算了", "算了吧", "不要了", "不用了", "不弄了", "不修了", "不报修了",
+    "先不办", "先不弄", "先不修", "暂时不办", "暂时不用", "暂时不处理",
+    "不用处理", "不用继续", "不用报修", "不用提交", "放弃", "停一下",
+    "停掉", "别报修", "别提交", "不想继续", "不想填", "不想提交",
+    "不想创建", "回到聊天", "回普通聊天", "换个问题", "先这样",
+    "cancel", "quit", "exit", "abort", "stop",
+    "never mind", "nvm", "forget it", "no need", "not needed",
+    "do not continue", "don't continue", "stop workflow", "end workflow",
+    "back to chat", "cancel workflow",
+}
+
+_WORKFLOW_EXIT_NEGATION_PHRASES = {
+    "不要取消", "别取消", "不取消", "不是取消", "不要退出", "别退出",
+    "不退出", "不要停止", "别停止",
+    "do not cancel", "don't cancel", "not cancel",
+}
+
+
+def _is_workflow_exit_intent(message: str) -> bool:
+    """Return True when an active workflow should be cancelled.
+
+    Active workflow turns intentionally bypass the LLM so form submission stays
+    deterministic. This local detector covers common natural cancellation
+    phrasing without spending a model call.
+    """
+    text = (message or "").strip().lower()
+    if not text:
+        return False
+
+    if any(phrase in text for phrase in _WORKFLOW_EXIT_NEGATION_PHRASES):
+        return False
+
+    if any(keyword in text for keyword in _WORKFLOW_EXIT_KEYWORDS):
+        return True
+
+    if any(keyword in text for keyword in _WORKFLOW_EXIT_INTENT_KEYWORDS):
+        return True
+
+    rejection_markers = (
+        "不想", "不需要", "不用", "不要", "先不", "暂时不", "先别",
+        "算了", "等会", "晚点", "later", "not now",
+    )
+    workflow_objects = (
+        "流程", "工单", "报修", "维修", "申请", "办理", "提交", "填写",
+        "workflow", "ticket", "work order", "repair", "form", "submit",
+    )
+    return any(marker in text for marker in rejection_markers) and any(
+        obj in text for obj in workflow_objects
+    )
+
+
+def _parse_workflow_exit_decision(content: str) -> bool | None:
+    """Parse the LLM's active-workflow intent classification."""
+    text = (content or "").strip()
+    if not text:
+        return None
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            lowered = text.lower()
+            if "cancel_workflow" in lowered or lowered == "cancel":
+                return True
+            if "continue_workflow" in lowered or lowered == "continue":
+                return False
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+
+    action = str(data.get("action") or data.get("intent") or "").strip().lower()
+    if action in {"cancel_workflow", "cancel", "exit", "stop"}:
+        return True
+    if action in {"continue_workflow", "continue", "proceed", "edit", "answer_question"}:
+        return False
+    return None
+
+
 _WORKFLOW_ACTION_KEYWORDS = [
     "报修", "维修", "修一下", "修理", "我要办", "帮我办",
     "我要申请", "我想申请", "提交", "办理", "发起",
@@ -221,6 +304,53 @@ def _build_retrieval_fallback_answer(context: str, citations: list[Citation], li
     return (context or "").strip()[:500]
 
 
+def _compact_citations(citations: list[Citation], max_total: int = 5) -> list[Citation]:
+    """Return user-facing citations with at most one best hit per source."""
+    best_by_source: dict[str, Citation] = {}
+    source_order: list[str] = []
+
+    for citation in citations:
+        source_key = (citation.source_id or "").strip()
+        if not source_key:
+            source_key = (citation.source_name or "").strip().lower()
+        if not source_key:
+            source_key = "|".join([
+                str(citation.page or ""),
+                str(citation.paragraph or ""),
+                (citation.content_snippet or "").strip().lower()[:120],
+            ])
+
+        existing = best_by_source.get(source_key)
+        if existing is None:
+            best_by_source[source_key] = citation
+            source_order.append(source_key)
+            continue
+
+        citation_score = citation.score if citation.score is not None else -1.0
+        existing_score = existing.score if existing.score is not None else -1.0
+        if citation_score > existing_score:
+            best_by_source[source_key] = citation
+
+    return [best_by_source[key] for key in source_order[:max_total]]
+
+
+def _retrieval_hits_payload(retrieval) -> dict:
+    """Small trace payload for retrieval events."""
+    return {
+        "query": getattr(retrieval, "query", None),
+        "hits": [
+            {
+                "source_id": hit.source_id,
+                "source_name": hit.source_name,
+                "score": hit.score,
+                "channel": hit.channel,
+                "snippet": (hit.content or "")[:160],
+            }
+            for hit in (getattr(retrieval, "hits", None) or [])[:5]
+        ],
+    }
+
+
 class AgentRuntime:
     """Main orchestrator for handling user requests.
 
@@ -309,12 +439,10 @@ class AgentRuntime:
 
         # ── Fast-path: Active workflow bypass ──
         if wf_state.get("status") in ("in_progress", "waiting_input"):
-            # Check for workflow exit keywords
-            for kw in _WORKFLOW_EXIT_KEYWORDS:
-                if kw in msg_lower:
-                    return await self._cancel_active_workflow(
-                        agent, session, req, trace_id, audit,
-                    )
+            if await self._should_exit_active_workflow(agent, req, audit):
+                return await self._cancel_active_workflow(
+                    agent, session, req, trace_id, audit,
+                )
             # Continue workflow directly (no LLM routing needed)
             return await self._continue_active_workflow(
                 agent, session, req, trace_id, audit,
@@ -421,6 +549,7 @@ class AgentRuntime:
         fallback_info: dict | None = None
         final_content = ""
         llm_resp = None
+        last_tool_result_text = ""
 
         for round_idx in range(MAX_TOOL_ROUNDS):
             audit.start_timer(f"llm_round_{round_idx}")
@@ -434,7 +563,7 @@ class AgentRuntime:
                 audit.log("error", event_data={
                     "error": str(e), "round": round_idx, "stage": "llm_call",
                 })
-                if action_intent.detected:
+                if action_intent.detected and not tool_calls_log:
                     fallback = await self._execute_action_fallback(
                         action_intent, req.message, handler_map, tool_defs, audit,
                     )
@@ -455,6 +584,13 @@ class AgentRuntime:
                         })
                         final_content = result.text
                         break
+                if tool_calls_log and last_tool_result_text:
+                    final_content = last_tool_result_text
+                    fallback_info = {
+                        "type": "tool_result",
+                        "reason": "llm_call_failed_after_tool_call",
+                    }
+                    break
                 if pre_citations:
                     # Have retrieval data — use it as fallback
                     final_content = _build_retrieval_fallback_answer(pre_context, pre_citations)
@@ -477,7 +613,7 @@ class AgentRuntime:
 
             # No tool calls → final answer
             if not llm_resp.tool_calls:
-                if action_intent.detected:
+                if action_intent.detected and not tool_calls_log:
                     fallback = await self._execute_action_fallback(
                         action_intent, req.message, handler_map, tool_defs, audit,
                     )
@@ -498,7 +634,7 @@ class AgentRuntime:
                         })
                         final_content = result.text
                         break
-                final_content = llm_resp.content
+                final_content = (llm_resp.content or "").strip() or last_tool_result_text
                 break
 
             # LLM wants to call tools
@@ -539,6 +675,8 @@ class AgentRuntime:
                     content=result.text,
                     tool_call_id=tc.id,
                 ))
+                if result.text:
+                    last_tool_result_text = result.text
 
                 # Collect side effects
                 if result.citations:
@@ -583,6 +721,8 @@ class AgentRuntime:
                     short_answer = c.content_snippet
                     break
 
+        user_facing_citations = _compact_citations(collected_citations)
+
         # Save messages
         await self._save_message(session.id, "user", req.message, trace_id)
         await self._save_message(session.id, "assistant", short_answer, trace_id)
@@ -591,7 +731,7 @@ class AgentRuntime:
         # Followups
         if collected_workflow_card:
             followups = ["如何填写？", "需要准备什么材料？"]
-        elif collected_citations:
+        elif user_facing_citations:
             followups = ["需要更多详细信息吗？", "还有其他问题吗？"]
         elif tool_calls_log:
             followups = ["查看详细结果", "还有其他问题吗？"]
@@ -602,7 +742,8 @@ class AgentRuntime:
             "short_answer": short_answer[:200],
             "mode": "conversational",
             "tool_calls_count": len(tool_calls_log),
-            "citations_count": len(collected_citations),
+            "citations_count": len(user_facing_citations),
+            "raw_citations_count": len(collected_citations),
             "fallback": fallback_info,
         })
         await audit.flush()
@@ -617,7 +758,7 @@ class AgentRuntime:
             session_id=session.id,
             trace_id=trace_id,
             short_answer=short_answer,
-            citations=collected_citations,
+            citations=user_facing_citations,
             suggested_followups=followups,
             workflow_card=collected_workflow_card,
             workflow_status=collected_workflow_status,
@@ -668,7 +809,7 @@ class AgentRuntime:
             if skill.skill_type == "knowledge_qa":
                 await self._register_knowledge_tool(
                     skill, config, tool_defs, handler_map, _unique_name,
-                    pre_retrieved=pre_retrieved,
+                    audit, pre_retrieved=pre_retrieved,
                 )
 
             elif skill.skill_type == "tool_call":
@@ -702,6 +843,7 @@ class AgentRuntime:
         self, skill: Skill, config: dict,
         tool_defs: list, handler_map: dict,
         unique_name: Callable[[str], str],
+        audit: AuditLogger,
         pre_retrieved: bool = False,
     ) -> None:
         domain = config.get("domain", "default")
@@ -732,7 +874,7 @@ class AgentRuntime:
                 },
             },
         })
-        handler_map[name] = self._make_knowledge_handler(skill, config)
+        handler_map[name] = self._make_knowledge_handler(skill, config, audit)
 
     async def _register_http_tools(
         self, skill: Skill, config: dict,
@@ -875,7 +1017,7 @@ class AgentRuntime:
 
             if sub_skill.skill_type == "knowledge_qa":
                 await self._register_knowledge_tool(
-                    sub_skill, sub_config, tool_defs, handler_map, unique_name,
+                    sub_skill, sub_config, tool_defs, handler_map, unique_name, audit,
                 )
             elif sub_skill.skill_type == "tool_call":
                 await self._register_http_tools(
@@ -891,7 +1033,7 @@ class AgentRuntime:
     # ── Skill-tool handlers ──────────────────────────────────
 
     def _make_knowledge_handler(
-        self, skill: Skill, config: dict,
+        self, skill: Skill, config: dict, audit: AuditLogger,
     ) -> Callable[[dict], Awaitable[SkillToolResult]]:
         """Create a handler that searches knowledge for a query."""
         domain = config.get("domain")
@@ -907,6 +1049,16 @@ class AgentRuntime:
             except Exception as e:
                 logger.warning(f"Knowledge retrieval failed: {e}")
                 return SkillToolResult(text="知识库检索失败，请稍后重试。")
+
+            audit.log(
+                "retrieval",
+                event_data={
+                    "domain": domain,
+                    "hit_count": len(retrieval.hits) if retrieval else 0,
+                },
+                retrieval_hits=_retrieval_hits_payload(retrieval) if retrieval else None,
+                latency_ms=retrieval.latency_ms if retrieval else None,
+            )
 
             if not retrieval or not retrieval.hits:
                 return SkillToolResult(text="未找到相关信息。")
@@ -1259,7 +1411,8 @@ class AgentRuntime:
             audit.log("pre_retrieval", event_data={
                 "domain": domain,
                 "hit_count": len(retrieval.hits) if retrieval else 0,
-            }, latency_ms=pre_latency)
+            }, retrieval_hits=_retrieval_hits_payload(retrieval) if retrieval else None,
+                latency_ms=pre_latency)
 
             if retrieval and retrieval.hits:
                 for hit in retrieval.hits[:5]:
@@ -1280,6 +1433,76 @@ class AgentRuntime:
         return "\n\n".join(all_parts), all_citations
 
     # ── Active workflow handlers ─────────────────────────────
+
+    async def _should_exit_active_workflow(
+        self, agent: Agent, req: InvokeRequest, audit: AuditLogger,
+    ) -> bool:
+        """Classify whether an active workflow turn means cancellation.
+
+        Form submissions stay deterministic and bypass this LLM classifier. For
+        natural-language turns we ask the agent's configured model, then fall
+        back to local intent rules if the model is unavailable.
+        """
+        if req.form_data:
+            return False
+
+        message = (req.message or "").strip()
+        if not message:
+            return False
+
+        prompt = (
+            "You are classifying a user's message while an enterprise workflow is active.\n"
+            "Decide whether the user wants to cancel/leave the active workflow, or continue it.\n"
+            "Return JSON only: {\"action\":\"cancel_workflow\"} or {\"action\":\"continue_workflow\"}.\n\n"
+            "Use cancel_workflow when the user means: stop, never mind, no longer needs this, "
+            "does not want to keep filling the form, wants to go back to normal chat, or wants to switch away.\n"
+            "Use continue_workflow when the user provides field values, asks how to fill something, "
+            "confirms, says no to edit a confirmation step, or explicitly says not to cancel.\n\n"
+            f"User message: {message}"
+        )
+
+        try:
+            llm = await get_llm_adapter_for_agent(agent, self.db)
+            resp = await llm.chat(
+                [
+                    LLMMessage(role="system", content="Classify active workflow turn intent. Output JSON only."),
+                    LLMMessage(role="user", content=prompt),
+                ],
+                temperature=0.0,
+                max_tokens=80,
+            )
+            decision = _parse_workflow_exit_decision(resp.content)
+            audit.log(
+                "workflow_turn_intent",
+                event_data={
+                    "message": message,
+                    "source": "llm",
+                    "raw": resp.content[:200],
+                    "exit": decision,
+                },
+            )
+            if decision is not None:
+                return decision
+        except Exception as e:
+            audit.log(
+                "workflow_turn_intent",
+                event_data={
+                    "message": message,
+                    "source": "llm_error",
+                    "error": str(e),
+                },
+            )
+
+        decision = _is_workflow_exit_intent(message)
+        audit.log(
+            "workflow_turn_intent",
+            event_data={
+                "message": message,
+                "source": "local_fallback",
+                "exit": decision,
+            },
+        )
+        return decision
 
     async def _continue_active_workflow(
         self, agent: Agent, session: ConversationSession,

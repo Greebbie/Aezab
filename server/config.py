@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     embedding_dim: int = env_field(1024, "EMBEDDING_DIM")
     hf_endpoint: str = env_field("https://hf-mirror.com", "HF_ENDPOINT")
 
+    # Knowledge upload
+    knowledge_max_upload_mb: int = env_field(50, "KNOWLEDGE_MAX_UPLOAD_MB")
+
     # Speech-to-text / ASR
     asr_provider: Literal["dashscope_qwen", "funasr_http", "openai_compatible", "disabled"] = env_field(
         "dashscope_qwen", "ASR_PROVIDER"
