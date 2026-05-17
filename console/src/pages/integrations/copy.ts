@@ -7,7 +7,7 @@ export function getIntegrationCopy(isZh: boolean) {
       subtitle: '集中查看并联调客户应用、语音输入、外部工具、工作流 webhook 和审计 trace。',
       integrationMap: '集成地图',
       integrationDesc:
-        '客户系统通过 invoke、stream、ASR API 调用 HlAB；HlAB 通过注册工具和工作流完成 webhook 调用客户系统。',
+        '客户系统通过 invoke、stream、ASR API 调用 Aezab；Aezab 通过注册工具和工作流完成 webhook 调用客户系统。',
       sourceOfTruth: {
         title: '配置边界',
         description:
@@ -23,11 +23,11 @@ export function getIntegrationCopy(isZh: boolean) {
       },
       categoryHelp: {
         inbound: {
-          summary: '客户自己的应用调用 HlAB Agent 的入口，例如网页、App、CRM、客服系统把用户消息发给 Agent。',
+          summary: '客户自己的应用调用 Aezab Agent 的入口，例如网页、App、CRM、客服系统把用户消息发给 Agent。',
           howTo: '先创建 Agent，然后在本页选择 Agent，复制 invoke / stream 示例接入。',
         },
         asr: {
-          summary: '语音输入转文字接口。客户应用上传音频，HlAB 返回文本，再把文本发给 Agent。',
+          summary: '语音输入转文字接口。客户应用上传音频，Aezab 返回文本，再把文本发给 Agent。',
           howTo: '在 Voice / ASR 配置中填 DashScope API Key，或部署自有 ASR 后填 host。',
         },
         outbound: {
@@ -113,7 +113,7 @@ export function getIntegrationCopy(isZh: boolean) {
     subtitle: 'Connect and test customer apps, voice input, outbound tools, workflow webhooks, and audit traces.',
     integrationMap: 'Integration map',
     integrationDesc:
-      'Customer systems call HlAB through invoke, stream, and ASR APIs. HlAB calls customer systems through registered tools and workflow completion webhooks.',
+      'Customer systems call Aezab through invoke, stream, and ASR APIs. Aezab calls customer systems through registered tools and workflow completion webhooks.',
     sourceOfTruth: {
       title: 'Configuration boundary',
       description:
@@ -129,12 +129,12 @@ export function getIntegrationCopy(isZh: boolean) {
     },
     categoryHelp: {
       inbound: {
-        summary: 'Entry points for customer apps to call HlAB agents from websites, apps, CRMs, or support systems.',
+        summary: 'Entry points for customer apps to call Aezab agents from websites, apps, CRMs, or support systems.',
         howTo: 'Create an agent, select it here, then copy the invoke or stream client snippet.',
       },
       asr: {
-        summary: 'Audio-to-text input. Customer apps upload audio, HlAB returns text, then the app sends that text to an agent.',
-        howTo: 'Configure a DashScope API key or point HlAB to a self-hosted ASR service.',
+        summary: 'Audio-to-text input. Customer apps upload audio, Aezab returns text, then the app sends that text to an agent.',
+        howTo: 'Configure a DashScope API key or point Aezab to a self-hosted ASR service.',
       },
       outbound: {
         summary: 'APIs the agent can call in the customer backend, such as creating tickets, checking orders, or updating CRM records.',

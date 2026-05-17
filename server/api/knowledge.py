@@ -260,7 +260,7 @@ def _extract_text_from_pdf(raw_bytes: bytes) -> str:
     except ImportError:
         raise HTTPException(
             400,
-            "PDF support requires pypdf. Install with: pip install 'hlab-agent-builder[rag]'",
+            "PDF support requires pypdf. Install with: pip install 'aezab[rag]'",
         )
     import io
     reader = PdfReader(io.BytesIO(raw_bytes))
@@ -279,7 +279,7 @@ def _extract_text_from_docx(raw_bytes: bytes) -> str:
     except ImportError:
         raise HTTPException(
             400,
-            "DOCX support requires python-docx. Install with: pip install 'hlab-agent-builder[rag]'",
+            "DOCX support requires python-docx. Install with: pip install 'aezab[rag]'",
         )
     import io
     doc = DocxDocument(io.BytesIO(raw_bytes))

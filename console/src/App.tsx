@@ -29,6 +29,7 @@ import SettingsPage from './pages/SettingsPage';
 import SkillsPage from './pages/SkillsPage';
 import HealthPage from './pages/HealthPage';
 import IntegrationsPage from './pages/IntegrationsPage';
+import { LANGUAGE_STORAGE_KEY } from './i18n';
 
 const { Header, Sider, Content } = Layout;
 
@@ -40,7 +41,7 @@ export default function App() {
   const toggleLang = () => {
     const next = i18n.language === 'zh' ? 'en' : 'zh';
     i18n.changeLanguage(next);
-    localStorage.setItem('hlab-lang', next);
+    localStorage.setItem(LANGUAGE_STORAGE_KEY, next);
   };
 
   const menuItems = [
@@ -62,7 +63,7 @@ export default function App() {
     <Layout style={{ minHeight: '100vh' }}>
       <Sider theme="dark" width={200}>
         <div style={{ height: 48, margin: 16, color: '#fff', fontSize: 18, fontWeight: 'bold', textAlign: 'center', lineHeight: '48px' }}>
-          HlAB Console
+          Aezab Console
         </div>
         <Menu
           theme="dark"
@@ -74,7 +75,7 @@ export default function App() {
       </Sider>
       <Layout>
         <Header style={{ background: '#fff', padding: '0 24px', fontSize: 16, fontWeight: 500, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span>Headless AI Agent Builder</span>
+          <span>Aezab Agent Console</span>
           <Button
             type="text"
             icon={<GlobalOutlined />}

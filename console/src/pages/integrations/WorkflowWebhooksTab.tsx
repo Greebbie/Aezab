@@ -271,7 +271,7 @@ export default function WorkflowWebhooksTab({ workflows, copy, onChanged }: Prop
             />
           </Form.Item>
           <Form.Item name="webhook_url" label={copy.fields.webhookUrl} rules={[{ required: true, type: 'url' }]}>
-            <Input prefix={<LinkOutlined />} placeholder="https://customer-system.example.com/webhooks/hlab" />
+            <Input prefix={<LinkOutlined />} placeholder="https://customer-system.example.com/webhooks/aezab" />
           </Form.Item>
           <Form.Item name="webhook_method" label={copy.fields.method}>
             <Select options={['POST', 'PUT', 'PATCH'].map((method) => ({ value: method, label: method }))} />

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.db import get_db
 from server.middleware.auth import get_current_user
 from server.exceptions import (
-    HlABError,
+    AezabError,
     LLMError,
     LLMRateLimitError,
     LLMTimeoutError,
@@ -130,8 +130,8 @@ async def invoke_stream(req: InvokeRequest, db: AsyncSession = Depends(get_db)):
                 "error_type": "tool",
                 "error_msg": "工具调用失败，请检查工具配置。",
             }))
-        except HlABError as exc:
-            logger.error("SSE pipeline HlAB error: %s", exc, exc_info=True)
+        except AezabError as exc:
+            logger.error("SSE pipeline Aezab error: %s", exc, exc_info=True)
             await queue.put(_sse_event("error", {
                 "detail": str(exc),
                 "error_type": "platform",

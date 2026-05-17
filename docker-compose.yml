@@ -5,14 +5,14 @@ services:
       - "8000:8000"
     env_file: .env
     environment:
-      - HLAB_DATABASE_URL=${HLAB_DATABASE_URL:-sqlite+aiosqlite:///./data/hlab.db}
-      - HLAB_REDIS_URL=${HLAB_REDIS_URL:-redis://redis:6379/0}
-      - HLAB_LLM_BASE_URL=${HLAB_LLM_BASE_URL:-http://ollama:11434/v1}
-      - HLAB_HF_ENDPOINT=${HLAB_HF_ENDPOINT:-https://hf-mirror.com}
-      - HF_ENDPOINT=${HLAB_HF_ENDPOINT:-https://hf-mirror.com}
+      - AEZAB_DATABASE_URL=${AEZAB_DATABASE_URL:-${HLAB_DATABASE_URL:-sqlite+aiosqlite:///./data/aezab.db}}
+      - AEZAB_REDIS_URL=${AEZAB_REDIS_URL:-${HLAB_REDIS_URL:-redis://redis:6379/0}}
+      - AEZAB_LLM_BASE_URL=${AEZAB_LLM_BASE_URL:-${HLAB_LLM_BASE_URL:-http://ollama:11434/v1}}
+      - AEZAB_HF_ENDPOINT=${AEZAB_HF_ENDPOINT:-${HLAB_HF_ENDPOINT:-https://hf-mirror.com}}
+      - HF_ENDPOINT=${AEZAB_HF_ENDPOINT:-${HLAB_HF_ENDPOINT:-https://hf-mirror.com}}
     volumes:
-      - hlab-data:/app/data
-      - hlab-model-cache:/root/.cache/huggingface
+      - aezab-data:/app/data
+      - aezab-model-cache:/root/.cache/huggingface
     depends_on:
       - redis
     restart: unless-stopped
@@ -55,9 +55,9 @@ services:
   # postgres:
   #   image: postgres:16-alpine
   #   environment:
-  #     POSTGRES_DB: hlab
-  #     POSTGRES_USER: hlab
-  #     POSTGRES_PASSWORD: hlab_pass
+  #     POSTGRES_DB: aezab
+  #     POSTGRES_USER: aezab
+  #     POSTGRES_PASSWORD: aezab_pass
   #   ports:
   #     - "5432:5432"
   #   volumes:
@@ -65,8 +65,8 @@ services:
   #   restart: unless-stopped
 
 volumes:
-  hlab-data:
-  hlab-model-cache:
+  aezab-data:
+  aezab-model-cache:
   ollama-models:
   # pgdata:
   # vllm-cache:

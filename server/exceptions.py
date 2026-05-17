@@ -1,5 +1,5 @@
 """
-HlAB platform exception hierarchy.
+Aezab platform exception hierarchy.
 
 Centralizes all custom exceptions so that engine modules, API endpoints,
 and middleware can catch specific error classes instead of bare Exceptions.
@@ -14,8 +14,8 @@ from typing import Any
 # Base
 # ---------------------------------------------------------------------------
 
-class HlABError(Exception):
-    """Base exception for all HlAB platform errors."""
+class AezabError(Exception):
+    """Base exception for all Aezab platform errors."""
 
     def __init__(self, message: str = "An unexpected error occurred", detail: dict[str, Any] | None = None) -> None:
         self.message = message
@@ -27,7 +27,7 @@ class HlABError(Exception):
 # LLM errors
 # ---------------------------------------------------------------------------
 
-class LLMError(HlABError):
+class LLMError(AezabError):
     """Base exception for LLM-related errors."""
 
     def __init__(
@@ -85,7 +85,7 @@ class LLMModelError(LLMError):
 # Retrieval errors
 # ---------------------------------------------------------------------------
 
-class RetrievalError(HlABError):
+class RetrievalError(AezabError):
     """Base exception for retrieval pipeline errors."""
 
     def __init__(
@@ -135,7 +135,7 @@ class FastLookupError(RetrievalError):
 # Workflow errors
 # ---------------------------------------------------------------------------
 
-class WorkflowError(HlABError):
+class WorkflowError(AezabError):
     """Base exception for workflow execution errors."""
 
     def __init__(
@@ -193,7 +193,7 @@ class WorkflowEscalationError(WorkflowError):
 # Tool invocation errors
 # ---------------------------------------------------------------------------
 
-class ToolInvocationError(HlABError):
+class ToolInvocationError(AezabError):
     """Tool calling failed during agent execution."""
 
     def __init__(
@@ -212,7 +212,7 @@ class ToolInvocationError(HlABError):
 # Authentication / authorization errors
 # ---------------------------------------------------------------------------
 
-class AuthenticationError(HlABError):
+class AuthenticationError(AezabError):
     """Base exception for authentication and permission errors."""
 
     def __init__(
