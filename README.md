@@ -83,7 +83,6 @@ http://localhost:8000
 | `aezab-model-cache` | 本地 embedding 模型缓存。 |
 | `ollama-models` | Ollama 模型数据。 |
 
-> 兼容说明：`AEZAB_` 是新的环境变量前缀。后端仍兼容旧的 `HLAB_` 前缀，已有部署不需要立即改 `.env`。
 
 ## 模型配置
 
