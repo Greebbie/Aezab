@@ -327,3 +327,7 @@ docker compose config --quiet
 ## 项目状态
 
 Aezab 当前覆盖 Agent 配置、RAG、Workflow、Tool Calling、ASR、Integrations、Playground、Audit 和 Docker 部署。项目仍在迭代中，适合作为企业内部或客户项目的自部署 Agent 底座。
+
+## License
+
+MIT

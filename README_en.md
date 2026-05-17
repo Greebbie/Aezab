@@ -327,3 +327,7 @@ docker compose config --quiet
 ## Project Status
 
 Aezab currently covers agent configuration, RAG, workflows, tool calling, ASR, integrations, Playground testing, audit traces, and Docker deployment. The project is under active development and is intended as a self-hosted agent foundation for internal systems or customer projects.
+
+## License
+
+MIT
