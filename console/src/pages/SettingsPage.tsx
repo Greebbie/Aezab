@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Alert, Card, Button, Form, Input, InputNumber, Select, Switch, Space, message, Tag, Tooltip,
-  Descriptions, Spin, Row, Col, Divider, Upload,
+  Descriptions, Spin, Row, Col, Divider, Upload, Collapse,
 } from 'antd';
 import {
   ThunderboltOutlined, DashboardOutlined, SafetyCertificateOutlined,
@@ -9,6 +9,8 @@ import {
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { asrApi, performanceApi, vectorAdminApi } from '../api';
+import BackupCard from '../components/settings/BackupCard';
+import { HelpLabel } from '../components/shared';
 
 interface PresetData {
   name: string;
@@ -158,14 +160,25 @@ const SETTINGS_COPY = {
     },
     presets: {
       title: '性能预设',
-      retrievalTopK: 'Retrieval Top-K',
-      llmTemperature: 'LLM Temperature',
-      llmMaxTokens: 'LLM Max Tokens',
-      llmTimeout: 'LLM Timeout',
-      toolRetries: 'Tool Retries',
-      keywordWeight: 'Keyword Weight',
-      hnswEfSearch: 'HNSW efSearch',
-      reranker: 'Reranker',
+      retrievalTopK: '返回结果数 (Top-K)',
+      llmTemperature: '回答随机度 (Temperature)',
+      llmMaxTokens: '最大回复长度 (Max Tokens)',
+      llmTimeout: 'LLM 超时时间',
+      toolRetries: '工具重试次数',
+      keywordWeight: '关键词权重',
+      hnswEfSearch: '检索精细度 (efSearch)',
+      reranker: '二次精排 (Reranker)',
+      // Localized name/description for the well-known preset keys returned
+      // by GET /performance/presets (server/performance_presets.py). The
+      // backend only ever returns Chinese text for `preset.name`/
+      // `preset.description`, so under an English UI these are used instead
+      // — see presetName()/presetDescription() below, which fall back to
+      // the raw backend string for any preset key not listed here.
+      labels: {
+        fast: { name: '快速模式', description: '低延迟，适合实时对话' },
+        balanced: { name: '均衡模式', description: '兼顾速度与质量' },
+        accurate: { name: '精准模式', description: '高质量回答，延迟较高' },
+      } as Record<string, { name: string; description: string }>,
     },
     current: {
       title: '当前运行配置',
@@ -174,6 +187,26 @@ const SETTINGS_COPY = {
     advanced: {
       title: '高级调优',
       save: '保存配置',
+      retrievalTopK: '检索返回条数 (Top-K)',
+      retrievalTopKHelp: '每次检索给大模型参考的最相关内容条数。调大能提供更多上下文，但会变慢、更占 Token。快速=8 / 均衡=15 / 精准=25。',
+      retrievalTimeout: '检索超时时间 (ms)',
+      retrievalTimeoutHelp: '检索环节最长等待时间，超过则放弃检索，直接用大模型已有信息回答。',
+      keywordWeight: '关键词权重 (Keyword Weight)',
+      keywordWeightHelp: '关键词匹配在混合检索里的权重。文档中专业术语、产品型号较多时可以调高。',
+      efSearch: '检索精细度 (efSearch)',
+      efSearchHelp: '检索精细度：越大越准但越慢。快速预设=64 / 均衡预设=128 / 精准预设=256。',
+      llmTemperature: 'LLM 随机度 (Temperature)',
+      llmTemperatureHelp: '回答的随机程度，越低越严谨、越高越有创造性，默认即可。',
+      llmMaxTokens: 'LLM 最大回复长度 (Max Tokens)',
+      llmMaxTokensHelp: '单次回答最多能生成多少内容。调高可以让回答更完整，但更慢、更贵。',
+      llmTimeout: 'LLM 超时时间 (ms)',
+      llmTimeoutHelp: '等待大模型响应的最长时间。如果经常超时可以调大这个值。',
+      toolTimeout: '工具调用超时时间 (ms)',
+      toolTimeoutHelp: '调用外部工具 / HTTP 接口时的最长等待时间。',
+      toolRetries: '工具调用重试次数',
+      toolRetriesHelp: '外部工具调用失败后自动重试的次数。网络不稳定时可以调高。',
+      rerankerEnabled: '二次精排 (Reranker)',
+      rerankerEnabledHelp: '对检索结果做二次排序，能显著提升准确度，但每次回答会慢约 0.5-1 秒，且首次使用需要下载模型。',
     },
   },
   en: {
@@ -246,14 +279,19 @@ const SETTINGS_COPY = {
     asrKeySources: ASR_KEY_SOURCE_LABELS,
     presets: {
       title: 'Presets',
-      retrievalTopK: 'Retrieval Top-K',
-      llmTemperature: 'LLM Temperature',
-      llmMaxTokens: 'LLM Max Tokens',
+      retrievalTopK: 'Results Used (Top-K)',
+      llmTemperature: 'Answer Randomness (Temperature)',
+      llmMaxTokens: 'Max Reply Length (Max Tokens)',
       llmTimeout: 'LLM Timeout',
       toolRetries: 'Tool Retries',
       keywordWeight: 'Keyword Weight',
-      hnswEfSearch: 'HNSW efSearch',
-      reranker: 'Reranker',
+      hnswEfSearch: 'Search Precision (efSearch)',
+      reranker: 'Second-pass Reranking (Reranker)',
+      labels: {
+        fast: { name: 'Fast Mode', description: 'Low latency, good for real-time conversation' },
+        balanced: { name: 'Balanced Mode', description: 'Balances speed and quality' },
+        accurate: { name: 'Accurate Mode', description: 'Higher-quality answers, higher latency' },
+      } as Record<string, { name: string; description: string }>,
     },
     current: {
       title: 'Current Runtime Configuration',
@@ -262,11 +300,39 @@ const SETTINGS_COPY = {
     advanced: {
       title: 'Advanced Tuning',
       save: 'Save Configuration',
+      retrievalTopK: 'Retrieval Results (Top-K)',
+      retrievalTopKHelp: 'How many of the most relevant chunks are handed to the model per query. Higher gives more context but is slower and uses more tokens. Fast = 8 / Balanced = 15 / Accurate = 25.',
+      retrievalTimeout: 'Retrieval Timeout (ms)',
+      retrievalTimeoutHelp: 'The longest retrieval is allowed to take before the system gives up and answers with whatever the model already knows.',
+      keywordWeight: 'Keyword Weight',
+      keywordWeightHelp: "How much keyword matching counts in the blended search. Raise it when your documents are full of technical terms or product codes.",
+      efSearch: 'Search Precision (efSearch)',
+      efSearchHelp: 'Search precision: higher is more accurate but slower. Fast preset = 64 / Balanced preset = 128 / Accurate preset = 256.',
+      llmTemperature: 'Answer Randomness (Temperature)',
+      llmTemperatureHelp: 'How random the answers are. Lower is more precise and consistent, higher is more creative. The default works for most cases.',
+      llmMaxTokens: 'Max Reply Length (Max Tokens)',
+      llmMaxTokensHelp: 'The maximum amount of content a single answer can generate. Higher allows more complete answers, but is slower and costs more.',
+      llmTimeout: 'LLM Timeout (ms)',
+      llmTimeoutHelp: 'How long to wait for the model before giving up. Increase this if you see timeout errors.',
+      toolTimeout: 'Tool Call Timeout (ms)',
+      toolTimeoutHelp: 'The longest wait allowed when calling an external tool or HTTP endpoint.',
+      toolRetries: 'Tool Retry Count',
+      toolRetriesHelp: 'How many times a failed external tool call is automatically retried. Raise this on unreliable networks.',
+      rerankerEnabled: 'Second-pass Reranking (Reranker)',
+      rerankerEnabledHelp: 'Re-scores retrieval results for a noticeable accuracy boost, at the cost of about 0.5-1 extra second per answer, and a one-time model download the first time it runs.',
     },
   },
 } as const;
 
 type SettingsCopy = (typeof SETTINGS_COPY)[keyof typeof SETTINGS_COPY];
+
+function presetName(key: string, backendName: string, copy: SettingsCopy): string {
+  return copy.presets.labels[key]?.name ?? backendName;
+}
+
+function presetDescription(key: string, backendDescription: string, copy: SettingsCopy): string {
+  return copy.presets.labels[key]?.description ?? backendDescription;
+}
 
 function asrRuntimeStatusText(status: Record<string, any>, copy: SettingsCopy) {
   if (!status.enabled) return copy.asr.disabled;
@@ -707,7 +773,7 @@ export default function SettingsPage() {
                 title={
                   <Space>
                     {PRESET_ICONS[key]}
-                    <span>{preset.name}</span>
+                    <span>{presetName(key, preset.name, copy)}</span>
                     {activePreset === key && (
                       <Tag color="success" icon={<CheckCircleOutlined />}>{copy.active}</Tag>
                     )}
@@ -726,16 +792,16 @@ export default function SettingsPage() {
                   </Button>,
                 ]}
               >
-                <p style={{ color: '#666', marginBottom: 12 }}>{preset.description}</p>
+                <p style={{ color: '#666', marginBottom: 12 }}>{presetDescription(key, preset.description, copy)}</p>
                 <Descriptions column={1} size="small" colon>
-                  <Descriptions.Item label={copy.presets.retrievalTopK}>{preset.retrieval_top_k}</Descriptions.Item>
-                  <Descriptions.Item label={copy.presets.llmTemperature}>{preset.llm_temperature}</Descriptions.Item>
-                  <Descriptions.Item label={copy.presets.llmMaxTokens}>{preset.llm_max_tokens}</Descriptions.Item>
-                  <Descriptions.Item label={copy.presets.llmTimeout}>{(preset.llm_timeout_ms / 1000).toFixed(0)}s</Descriptions.Item>
-                  <Descriptions.Item label={copy.presets.toolRetries}>{preset.tool_max_retries}</Descriptions.Item>
-                  <Descriptions.Item label={copy.presets.keywordWeight}>{preset.keyword_weight}</Descriptions.Item>
-                  <Descriptions.Item label={copy.presets.hnswEfSearch}>{preset.ef_search}</Descriptions.Item>
-                  <Descriptions.Item label={copy.presets.reranker}>
+                  <Descriptions.Item label={<HelpLabel label={copy.presets.retrievalTopK} help={copy.advanced.retrievalTopKHelp} />}>{preset.retrieval_top_k}</Descriptions.Item>
+                  <Descriptions.Item label={<HelpLabel label={copy.presets.llmTemperature} help={copy.advanced.llmTemperatureHelp} />}>{preset.llm_temperature}</Descriptions.Item>
+                  <Descriptions.Item label={<HelpLabel label={copy.presets.llmMaxTokens} help={copy.advanced.llmMaxTokensHelp} />}>{preset.llm_max_tokens}</Descriptions.Item>
+                  <Descriptions.Item label={<HelpLabel label={copy.presets.llmTimeout} help={copy.advanced.llmTimeoutHelp} />}>{(preset.llm_timeout_ms / 1000).toFixed(0)}s</Descriptions.Item>
+                  <Descriptions.Item label={<HelpLabel label={copy.presets.toolRetries} help={copy.advanced.toolRetriesHelp} />}>{preset.tool_max_retries}</Descriptions.Item>
+                  <Descriptions.Item label={<HelpLabel label={copy.presets.keywordWeight} help={copy.advanced.keywordWeightHelp} />}>{preset.keyword_weight}</Descriptions.Item>
+                  <Descriptions.Item label={<HelpLabel label={copy.presets.hnswEfSearch} help={copy.advanced.efSearchHelp} />}>{preset.ef_search}</Descriptions.Item>
+                  <Descriptions.Item label={<HelpLabel label={copy.presets.reranker} help={copy.advanced.rerankerEnabledHelp} />}>
                     <Tag color={preset.reranker_enabled ? 'green' : 'default'}>
                       {preset.reranker_enabled ? copy.enabled : copy.disabled}
                     </Tag>
@@ -761,7 +827,7 @@ export default function SettingsPage() {
                 <span>{copy.current.activeConfiguration}</span>
                 {activePreset ? (
                   <Tag color={PRESET_COLORS[activePreset] || 'blue'}>
-                    {presets[activePreset]?.name || activePreset}
+                    {presets[activePreset] ? presetName(activePreset, presets[activePreset].name, copy) : activePreset}
                   </Tag>
                 ) : (
                   <Tag color="orange">{copy.custom}</Tag>
@@ -785,78 +851,87 @@ export default function SettingsPage() {
       </Spin>
 
       {/* ── Advanced Tuning ──────────────────────────────── */}
-      <Divider orientation="left">{copy.advanced.title}</Divider>
-      <Card>
-        <Form form={form} layout="vertical">
-          <Row gutter={24}>
-            <Col xs={24} sm={12} md={8}>
-              <Form.Item name="retrieval_top_k" label="Retrieval Top-K">
-                <InputNumber min={1} max={50} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={12} md={8}>
-              <Form.Item name="retrieval_timeout_ms" label="Retrieval Timeout (ms)">
-                <InputNumber min={1000} max={120000} step={1000} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={12} md={8}>
-              <Form.Item name="keyword_weight" label="Keyword Weight (BM25 in RRF)">
-                <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-          </Row>
+      <Collapse
+        style={{ marginBottom: 24 }}
+        items={[{
+          key: 'advanced-tuning',
+          label: copy.advanced.title,
+          children: (
+            <Form form={form} layout="vertical">
+              <Row gutter={24}>
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="retrieval_top_k" label={<HelpLabel label={copy.advanced.retrievalTopK} help={copy.advanced.retrievalTopKHelp} />}>
+                    <InputNumber min={1} max={50} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="retrieval_timeout_ms" label={<HelpLabel label={copy.advanced.retrievalTimeout} help={copy.advanced.retrievalTimeoutHelp} />}>
+                    <InputNumber min={1000} max={120000} step={1000} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="keyword_weight" label={<HelpLabel label={copy.advanced.keywordWeight} help={copy.advanced.keywordWeightHelp} />}>
+                    <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
 
-          <Row gutter={24}>
-            <Col xs={24} sm={12} md={8}>
-              <Form.Item name="ef_search" label="HNSW efSearch">
-                <InputNumber min={16} max={512} step={16} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={12} md={8}>
-              <Form.Item name="llm_temperature" label="LLM Temperature">
-                <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={12} md={8}>
-              <Form.Item name="llm_max_tokens" label="LLM Max Tokens">
-                <InputNumber min={1} max={128000} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={12} md={8}>
-              <Form.Item name="llm_timeout_ms" label="LLM Timeout (ms)">
-                <InputNumber min={1000} max={600000} step={1000} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-          </Row>
+              <Row gutter={24}>
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="ef_search" label={<HelpLabel label={copy.advanced.efSearch} help={copy.advanced.efSearchHelp} />}>
+                    <InputNumber min={16} max={512} step={16} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="llm_temperature" label={<HelpLabel label={copy.advanced.llmTemperature} help={copy.advanced.llmTemperatureHelp} />}>
+                    <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="llm_max_tokens" label={<HelpLabel label={copy.advanced.llmMaxTokens} help={copy.advanced.llmMaxTokensHelp} />}>
+                    <InputNumber min={1} max={128000} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="llm_timeout_ms" label={<HelpLabel label={copy.advanced.llmTimeout} help={copy.advanced.llmTimeoutHelp} />}>
+                    <InputNumber min={1000} max={600000} step={1000} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
 
-          <Row gutter={24}>
-            <Col xs={24} sm={12} md={8}>
-              <Form.Item name="tool_timeout_ms" label="Tool Timeout (ms)">
-                <InputNumber min={1000} max={300000} step={1000} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={12} md={8}>
-              <Form.Item name="tool_max_retries" label="Tool Max Retries">
-                <InputNumber min={0} max={10} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={12} md={8}>
-              <Form.Item name="reranker_enabled" label="Reranker Enabled" valuePropName="checked">
-                <Switch />
-              </Form.Item>
-            </Col>
-          </Row>
+              <Row gutter={24}>
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="tool_timeout_ms" label={<HelpLabel label={copy.advanced.toolTimeout} help={copy.advanced.toolTimeoutHelp} />}>
+                    <InputNumber min={1000} max={300000} step={1000} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="tool_max_retries" label={<HelpLabel label={copy.advanced.toolRetries} help={copy.advanced.toolRetriesHelp} />}>
+                    <InputNumber min={0} max={10} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="reranker_enabled" label={<HelpLabel label={copy.advanced.rerankerEnabled} help={copy.advanced.rerankerEnabledHelp} />} valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                </Col>
+              </Row>
 
-          <Space>
-            <Button type="primary" onClick={handleSaveConfig} loading={savingConfig}>
-              {copy.advanced.save}
-            </Button>
-            <Button onClick={loadCurrentConfig}>
-              {copy.resetToCurrent}
-            </Button>
-          </Space>
-        </Form>
-      </Card>
+              <Space>
+                <Button type="primary" onClick={handleSaveConfig} loading={savingConfig}>
+                  {copy.advanced.save}
+                </Button>
+                <Button onClick={loadCurrentConfig}>
+                  {copy.resetToCurrent}
+                </Button>
+              </Space>
+            </Form>
+          ),
+        }]}
+      />
+
+      {/* ── Data Backups ──────────────────────────────────── */}
+      <BackupCard />
     </div>
   );
 }

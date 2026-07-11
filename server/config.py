@@ -2,16 +2,29 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import secrets
 from typing import Any, Literal
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
+logger = logging.getLogger(__name__)
+
 
 def env_field(default: Any, name: str) -> Any:
     """Use AEZAB_ as the primary prefix while accepting legacy HLAB_ names."""
     return Field(default, validation_alias=AliasChoices(f"AEZAB_{name}", f"HLAB_{name}"))
+
+
+def env_str(name: str, default: str) -> str:
+    """Resolve a raw env setting OUTSIDE the Settings model with the same
+    prefix convention as `env_field`: `AEZAB_{name}` wins, legacy
+    `HLAB_{name}` is accepted as a fallback, then `default`. Empty strings
+    count as unset (the `or` chain skips them)."""
+    return os.getenv(f"AEZAB_{name}") or os.getenv(f"HLAB_{name}") or default
 
 
 class Settings(BaseSettings):
@@ -37,6 +50,7 @@ class Settings(BaseSettings):
     llm_max_tokens: int = env_field(2048, "LLM_MAX_TOKENS")
     llm_timeout: int = env_field(60, "LLM_TIMEOUT")  # Per-request LLM call timeout in seconds
     pipeline_timeout_seconds: int = env_field(90, "PIPELINE_TIMEOUT_SECONDS")  # Global invoke pipeline timeout
+    idempotency_ttl_s: float = env_field(300, "IDEMPOTENCY_TTL_S")  # Client Idempotency-Key cache TTL (seconds)
 
     # Embedding
     embedding_provider: Literal["local", "dashscope", "openai_compatible"] = env_field(
@@ -89,7 +103,66 @@ class Settings(BaseSettings):
     # Audit
     audit_enabled: bool = env_field(True, "AUDIT_ENABLED")
 
+    # Audit retention (server/engine/retention.py) — background purge of
+    # audit_traces rows older than audit_retention_days, run once every 24h.
+    # <= 0 means retain forever (purge disabled). Does NOT affect
+    # messages/conversation_sessions — those hold conversation history, a
+    # separate concern from the audit log.
+    audit_retention_days: int = env_field(90, "AUDIT_RETENTION_DAYS")
+
+    # Backups (server/engine/backup.py) — zero-config local backup of the
+    # SQLite database, FAISS index, and local config files to
+    # ./data/backups/. backup_interval_hours <= 0 disables the scheduler.
+    backup_keep: int = env_field(7, "BACKUP_KEEP")
+    backup_interval_hours: int = env_field(24, "BACKUP_INTERVAL_HOURS")
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
 
 settings = Settings()
+
+
+def _ensure_persistent_secret_key() -> None:
+    """Auto-generate and persist a JWT secret key when none was configured.
+
+    The `change-me-in-production` default is public (it's in this very
+    file), so anyone could forge JWTs against a deployment that never set
+    AEZAB_SECRET_KEY. Non-technical users running the one-click deploy are
+    never going to set it themselves, so instead of trusting the insecure
+    default we generate a random key on first boot and persist it to
+    ./data/secret_key — giving zero-config installs real security while
+    keeping tokens valid across restarts (a purely in-memory random key
+    would invalidate every session on each process restart).
+    """
+    if settings.secret_key != "change-me-in-production":
+        return
+
+    key_path = os.path.join("./data", "secret_key")
+    try:
+        os.makedirs("./data", exist_ok=True)
+        if os.path.exists(key_path):
+            with open(key_path, "r", encoding="utf-8") as f:
+                persisted = f.read().strip()
+            if persisted:
+                settings.secret_key = persisted
+                return
+
+        generated = secrets.token_urlsafe(48)
+        with open(key_path, "w", encoding="utf-8") as f:
+            f.write(generated)
+        settings.secret_key = generated
+    except OSError as exc:
+        # Read-only filesystem, permission error, etc. — fall back to an
+        # in-memory random key so auth is still secure for this process,
+        # even though tokens won't survive a restart.
+        logger.warning(
+            "Could not persist secret key to %s (%s); using an in-memory "
+            "random key for this process only. Set AEZAB_SECRET_KEY to "
+            "avoid invalidating sessions on every restart.",
+            key_path,
+            exc,
+        )
+        settings.secret_key = secrets.token_urlsafe(48)
+
+
+_ensure_persistent_secret_key()

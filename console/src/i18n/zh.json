@@ -53,6 +53,7 @@
   "nav": {
     "dashboard": "仪表盘",
     "playground": "测试场",
+    "conversations": "对话记录",
     "integrations": "接入中心",
     "agents": "智能体",
     "skills": "技能",
@@ -109,8 +110,44 @@
       "toolCalls": "Agent 调用 HTTP 工具或内置工具的次数，用于观察是否真正打通了外部系统。",
       "avgLatency": "知识检索平均耗时。过高时通常需要减少 top_k、调小 chunk 或检查向量模型。",
       "avgLLMLatency": "模型调用平均耗时。受模型供应商、上下文长度和工具轮次影响。",
-      "circuitBreaker": "Closed 表示正常调用；Open 表示连续失败后暂时停止调用；Half Open 表示正在小流量探测恢复。"
+      "circuitBreaker": "Closed 表示正常调用；Open 表示连续失败后暂时停止调用；Half Open 表示正在小流量探测恢复。",
+      "usage": "Token 用量大致反映模型调用的成本高低；因为各家模型定价不同，这里不做金额换算，只统计 token 数量。"
+    },
+    "setupCta": {
+      "title": "三步上线你的第一个智能体",
+      "description": "连接大模型 → 选一个模板 → 开始对话",
+      "action": "开始配置"
+    },
+    "usage": {
+      "title": "近 30 天 Token 用量",
+      "totalTokens": "Token 总量",
+      "totalInvocations": "累计处理对话数",
+      "promptTokens": "输入 Token",
+      "completionTokens": "输出 Token",
+      "byDay": "每日趋势",
+      "noData": "暂无用量数据，新对话开始后将自动统计。",
+      "loadFailed": "加载用量统计失败"
     }
+  },
+  "conversations": {
+    "eyebrow": "对话记录",
+    "title": "对话记录",
+    "description": "查看客户和智能体聊了什么、机器人是怎么回答的——纯业务视角，无需理解技术细节。",
+    "sessionList": "会话列表",
+    "filterByAgent": "按智能体筛选",
+    "agent": "智能体",
+    "summary": "对话摘要",
+    "noSummary": "（暂无消息）",
+    "messageCount": "消息数",
+    "startedAt": "开始时间",
+    "lastActive": "最后活跃",
+    "noSessions": "暂无对话记录，客户开始和智能体聊天后会显示在这里。",
+    "transcript": "完整对话",
+    "selectSessionHint": "点击左侧的会话，查看完整对话内容。",
+    "noMessages": "这个会话还没有消息。",
+    "roleUser": "客户",
+    "roleAssistant": "智能体",
+    "emptyMessage": "（空消息）"
   },
   "agents": {
     "title": "智能体管理",
@@ -192,7 +229,12 @@
       "rollback": "回退",
       "escalate": "升级"
     },
-    "deleteConfirm": "确定要删除此工作流吗？"
+    "deleteConfirm": "确定要删除此工作流吗？",
+    "deleteInUseTitle": "该资源正被 {{count}} 个智能体使用",
+    "deleteInUseBody": "删除后这些智能体将无法使用此能力。",
+    "deleteInUseMore": " 等 {{count}} 个",
+    "deleteAnyway": "仍要删除",
+    "usageCheckFailed": "使用情况检查失败"
   },
   "knowledge": {
     "title": "知识库管理",
@@ -246,6 +288,11 @@
     },
     "uploadSuccess": "上传并分块成功",
     "deleteConfirm": "确定删除此知识源及其所有条目？",
+    "deleteInUseTitle": "该资源正被 {{count}} 个智能体使用",
+    "deleteInUseBody": "删除后这些智能体将无法使用此能力。",
+    "deleteInUseMore": " 等 {{count}} 个",
+    "deleteAnyway": "仍要删除",
+    "usageCheckFailed": "使用情况检查失败",
     "help": {
       "page": "Agent 回答知识问题时，会先在绑定的知识源中检索：快答 KV、关键词 BM25、向量召回并行执行，再融合排序；命中内容会作为上下文交给 LLM 生成回答。",
       "sourceType": "选择资料的组织方式：文档适合手册和政策；FAQ 适合标准问答；KV 适合电话、地址、价格等精确快答；结构化表适合 CSV/XLSX 这类行列表数据。",
@@ -273,6 +320,16 @@
       "loadChunksFailed": "加载条目失败",
       "deleted": "已删除",
       "deleteFailed": "删除失败"
+    },
+    "modelStatus": {
+      "notDownloadedTitle": "向量模型尚未下载",
+      "notDownloadedDesc": "向量模型（{{model}}，约 2GB）尚未下载。上传文档前需要先下载，下载期间服务可正常使用其他功能。",
+      "downloadButton": "立即下载",
+      "downloadingTitle": "正在下载向量模型",
+      "downloadingDesc": "正在下载向量模型…国内用户已自动使用镜像加速。可离开此页，下载会继续。",
+      "errorTitle": "向量模型下载失败",
+      "retryButton": "重试",
+      "uploadWarning": "向量模型未就绪，上传后将只能使用关键词检索；建议先下载模型。"
     }
   },
   "tools": {
@@ -294,7 +351,12 @@
       "webhook": "Webhook",
       "rpc": "RPC"
     },
-    "deleteConfirm": "确定要删除此工具吗？"
+    "deleteConfirm": "确定要删除此工具吗？",
+    "deleteInUseTitle": "该资源正被 {{count}} 个智能体使用",
+    "deleteInUseBody": "删除后这些智能体将无法使用此能力。",
+    "deleteInUseMore": " 等 {{count}} 个",
+    "deleteAnyway": "仍要删除",
+    "usageCheckFailed": "使用情况检查失败"
   },
   "skills": {
     "title": "技能管理",
@@ -313,22 +375,53 @@
     "deleteConfirm": "确定要删除此技能吗？"
   },
   "llmConfigs": {
-    "title": "模型配置",
+    "title": "模型配置管理",
     "create": "创建配置",
     "edit": "编辑配置",
     "provider": "提供商",
     "baseUrl": "接口地址",
+    "baseUrlHelp": "模型服务的接口地址。选择上方供应商后会自动填写。",
+    "baseUrlRequired": "请填写接口地址",
     "apiKey": "API密钥",
+    "apiKeyHelp": "在供应商账户页面获取的密钥，服务器会加密保存。",
+    "apiKeyPlaceholder": "sk-...（本地模型可留空）",
+    "apiKeySavedPlaceholder": "已保存（留空表示不修改）",
     "model": "模型名称",
+    "modelHelp": "不确定就用默认值即可。",
+    "modelRequired": "请填写模型名称",
     "temperature": "温度",
+    "temperatureHelp": "回答的随机程度，越低越严谨、越高越有创造性，默认即可。",
+    "topP": "Top P",
+    "topPHelp": "与温度类似的随机性控制参数，一般保持默认即可。",
     "maxTokens": "最大Token数",
+    "maxTokensHelp": "单次回答的最大长度。调高可以让回答更长，但速度更慢、费用更高。",
+    "timeout": "超时时间（毫秒）",
+    "timeoutHelp": "等待模型响应的最长时间。如果经常超时可以调大这个值。",
     "isDefault": "默认配置",
     "setDefault": "设为默认",
-    "loadTemplate": "加载模板",
-    "testConfig": "测试配置",
-    "testSuccess": "测试成功",
-    "testFailed": "测试失败",
-    "deleteConfirm": "确定要删除此配置吗？"
+    "setDefaultSuccess": "默认配置已更新",
+    "testConfig": "测试连接",
+    "testSuccess": "连接测试通过",
+    "testFailed": "连接测试失败",
+    "testFillRequired": "测试前请先填写接口地址和模型名称。",
+    "testNeedsKey": "测试连接需要重新输入密钥。",
+    "testPassedTitle": "测试通过",
+    "testFailedTitle": "测试失败",
+    "testResponse": "模型回复",
+    "testLatency": "耗时",
+    "testError": "错误信息",
+    "presetHint": "点击下方卡片自动填充对应供应商的连接信息；如果都不符合，选择“自定义”。",
+    "pickProviderFirst": "请先选择上方的供应商",
+    "advancedSettings": "高级设置",
+    "namePlaceholder": "例如：生产环境配置",
+    "nameRequired": "请输入名称",
+    "defaultTag": "默认",
+    "columnCreated": "创建时间",
+    "createSuccess": "模型配置创建成功",
+    "updateSuccess": "模型配置更新成功",
+    "deleteSuccess": "模型配置已删除",
+    "deleteConfirm": "确定要删除此配置吗？",
+    "deleteConfirmDescription": "此操作无法撤销。"
   },
   "settings": {
     "title": "系统设置",
@@ -364,6 +457,186 @@
     "showTrace": "显示追踪",
     "streaming": "流式响应中...",
     "citations": "引用来源",
-    "followups": "推荐追问"
+    "followups": "推荐追问",
+    "checkLlmConfigHint": "可到「模型配置」页点测试连接排查。"
+  },
+  "agentTemplates": {
+    "fromTemplate": "从模板创建",
+    "modalTitle": "从模板创建智能体",
+    "stepSelectTemplate": "选择模板",
+    "stepConfigure": "配置实例",
+    "stepKnowledge": "知识库",
+    "selectTemplateHint": "选择一个内置模板，快速创建一个可用的智能体。",
+    "agentName": "智能体名称",
+    "agentNamePlaceholder": "留空则使用模板名称",
+    "llmConfig": "模型配置",
+    "llmConfigPlaceholder": "选择一个模型配置（可留空使用默认）",
+    "createAgent": "创建智能体",
+    "back": "上一步",
+    "next": "下一步",
+    "finish": "完成",
+    "skip": "跳过，稍后配置",
+    "knowledgeOnboardingTitle": "补充知识库",
+    "knowledgeOnboardingHint": "该模板依赖知识库回答问题，请选择要绑定的知识源。",
+    "selectKnowledgeSources": "选择知识源",
+    "noKnowledgeSourcesHint": "还没有知识源？先去知识库页上传文档。",
+    "goToKnowledge": "前往知识库页",
+    "loadTemplatesFailed": "加载模板失败",
+    "instantiateFailed": "创建失败",
+    "loadCapabilitiesFailed": "加载能力配置失败",
+    "saveKnowledgeFailed": "保存知识库绑定失败",
+    "agentCreated": "智能体已创建",
+    "knowledgeSaved": "知识库绑定已保存",
+    "categories": {
+      "customer_service": "客服",
+      "operations": "运营",
+      "booking": "预约"
+    }
+  },
+  "eventSubscriptions": {
+    "tab": "事件订阅",
+    "title": "事件订阅",
+    "create": "新建订阅",
+    "edit": "编辑订阅",
+    "name": "名称",
+    "namePlaceholder": "例如：工单系统回调",
+    "url": "URL",
+    "urlPlaceholder": "https://your-system.example.com/webhooks/hlab",
+    "secret": "密钥",
+    "secretPlaceholder": "编辑时留空表示不修改",
+    "events": "事件类型",
+    "eventsPlaceholder": "选择或输入事件类型",
+    "enabled": "启用",
+    "createdAt": "创建时间",
+    "actions": "操作",
+    "save": "保存",
+    "delete": "删除",
+    "deleteConfirm": "确定要删除此订阅吗？",
+    "allEvents": "全部事件 (*)",
+    "verificationHint": "回调请求携带 X-HlAB-Event 与 X-HlAB-Signature 请求头，签名规则为 sha256=<hmac_sha256(secret, raw_body)>，请使用密钥校验请求体完整性。",
+    "docsLink": "查看集成文档",
+    "createSuccess": "订阅已创建",
+    "updateSuccess": "订阅已更新",
+    "deleteSuccess": "订阅已删除",
+    "toggleFailed": "更新启用状态失败",
+    "loadFailed": "加载订阅失败",
+    "saveFailed": "保存订阅失败",
+    "deleteFailed": "删除订阅失败",
+    "invalidUrl": "URL 必须以 http:// 或 https:// 开头",
+    "noSubscriptions": "还没有事件订阅"
+  },
+  "auth": {
+    "title": "登录 Aezab",
+    "setupTitle": "创建管理员账号",
+    "setupSubtitle": "首次使用，请创建管理员账号，用于登录这个控制台",
+    "username": "用户名",
+    "password": "密码",
+    "confirmPassword": "确认密码",
+    "login": "登录",
+    "createAdmin": "创建管理员账号",
+    "logout": "退出登录",
+    "errorBadCredentials": "用户名或密码错误",
+    "errorPasswordMismatch": "两次输入的密码不一致",
+    "errorPasswordTooShort": "密码至少需要 8 位",
+    "errorGeneric": "发生了一些问题，请重试",
+    "serverUnreachable": "无法连接到服务器，请检查后端是否已启动",
+    "retry": "重试"
+  },
+  "setup": {
+    "modalTitle": "首次运行向导",
+    "stepConnectModel": "连接大模型",
+    "stepCreateAgent": "创建智能体",
+    "stepDone": "完成",
+    "step1": {
+      "title": "连接一个大模型 — 它是智能体的大脑",
+      "hint": "选一个下面的服务商，大部分只需要一个密钥就能开始。",
+      "fillRequired": "请先填写模型名称和服务地址，再测试连接。",
+      "testButton": "测试连接",
+      "testSuccess": "连接成功，模型已回复。",
+      "testFailedGeneric": "连接测试失败。",
+      "createFailed": "保存模型配置失败。",
+      "showRawError": "查看详细错误信息",
+      "advancedSettings": "高级设置",
+      "advancedSettingsHint": "如果要接入自建中转或代理地址，可以在这里修改服务地址。",
+      "testErrors": {
+        "authError": "API Key 不对或没生效，检查是否复制完整。",
+        "networkError": "连不上这个服务地址，检查网络或服务地址是否正确。",
+        "otherError": "测试失败，请查看下方的详细错误信息。"
+      }
+    },
+    "providers": {
+      "dashscope": {
+        "name": "通义千问 (DashScope)",
+        "description": "阿里云出品，国内直连，注册即送额度。"
+      },
+      "zhipu": {
+        "name": "智谱 GLM",
+        "description": "智谱 AI 的 GLM 系列模型，中文对话能力强。"
+      },
+      "minimax": {
+        "name": "MiniMax",
+        "description": "MiniMax 的兼容接口，擅长复杂推理任务。"
+      },
+      "openai": {
+        "name": "OpenAI",
+        "description": "OpenAI 官方 GPT 模型，需要有余额的密钥。"
+      },
+      "ollama": {
+        "name": "Ollama（本地免费）",
+        "description": "跑在你自己的机器上，不需要密钥，也不用联网。"
+      },
+      "custom": {
+        "name": "自定义",
+        "description": "连接你自己已有的兼容 OpenAI 协议的服务地址。"
+      }
+    },
+    "fields": {
+      "baseUrl": "服务地址",
+      "baseUrlHelp": "你的模型服务对应的接口地址。",
+      "apiKey": "密钥",
+      "apiKeyHelp": "在服务商的账户或密钥管理页面可以找到。",
+      "apiKeyPlaceholder": "在此粘贴你的密钥",
+      "model": "模型名称",
+      "modelHelp": "不确定就用默认值。"
+    },
+    "step2": {
+      "title": "创建你的第一个智能体",
+      "hint": "选一个贴近你业务场景的模板，创建后即可直接使用。",
+      "loadFailed": "加载智能体模板失败。",
+      "createFailed": "创建智能体失败。",
+      "namePlaceholder": "智能体名称（可选）",
+      "skip": "跳过，稍后自己配置",
+      "createButton": "创建"
+    },
+    "step3": {
+      "title": "「{{name}}」已就绪",
+      "titleGeneric": "你的智能体已就绪",
+      "goToPlayground": "去测试对话",
+      "knowledgeHint": "想让它更懂你的业务？去「知识库」页面上传文档。"
+    }
+  },
+  "errors": {
+    "unauthorized": "登录已过期或密钥无效，请重新登录。",
+    "forbidden": "你没有权限执行此操作。",
+    "rateLimited": "调用频率受限，或账户余额/额度已用完，请稍后再试。",
+    "serverError": "服务器出了点问题，请稍后再试。",
+    "timeout": "请求超时，服务器可能正在下载模型或负载较高，请稍后再试。",
+    "network": "连不上后端服务，请确认服务是否在运行。",
+    "generic": "出了点问题。"
+  },
+  "health": {
+    "title": "系统健康状态",
+    "llmComponent": "大模型连通性",
+    "recheck": "重新检测",
+    "goToLlmConfigs": "去模型配置",
+    "checkLlmHint": "使用当前配置的密钥检测大模型是否可达，会产生一次真实调用。",
+    "llm": {
+      "healthy": "LLM 连接正常。",
+      "auth_error": "API Key 无效或已过期，请到「模型配置」页重新测试连接。",
+      "rate_limited": "调用频率受限或账户余额不足，请检查服务商账户余额或稍后重试。",
+      "unreachable": "无法连接到 LLM 服务地址，请检查网络连接或 Base URL 是否正确。",
+      "not_configured": "尚未配置默认 LLM，请到「模型配置」页添加一个配置并设为默认。",
+      "error": "LLM 调用失败，请到「模型配置」页测试连接查看详情。"
+    }
   }
 }

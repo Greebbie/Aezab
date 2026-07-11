@@ -31,7 +31,7 @@ from server.schemas.invoke import (
     Citation,
     WorkflowCard,
 )
-from server.engine.llm_adapter import LLMMessage, get_llm_adapter_for_agent
+from server.engine.llm_adapter import LLMMessage, LLMStreamError, get_llm_adapter_for_agent
 from server.engine.context_budget import (
     MAX_INPUT_TOKENS, MAX_TOOL_RESULT_TOKENS, trim_messages, truncate_text,
 )
@@ -39,6 +39,12 @@ from server.engine.knowledge_retriever import KnowledgeRetriever
 from server.engine.tool_gateway import ToolGateway
 from server.engine.workflow_executor import WorkflowExecutor
 from server.engine.audit_logger import AuditLogger, new_trace_id
+from server.engine.event_dispatcher import emit_event
+from server.engine.summary_scheduler import (
+    RECENT_WINDOW,
+    SUMMARY_THRESHOLD,
+    schedule_summary_update,
+)
 from server.engine.vector_store import get_vector_store_if_initialized
 from server.runtime_config import runtime_config
 
@@ -49,6 +55,27 @@ MAX_TOOL_ROUNDS = 5
 
 # Maximum delegation depth
 MAX_DELEGATION_DEPTH = 3
+
+# ── Current-session memory (Wave 4 / Workstream M) ─────────────────
+# SUMMARY_THRESHOLD / RECENT_WINDOW now live in server.engine.summary_scheduler
+# (Wave 5 / Workstream B — the fold itself moved off the critical path) and
+# are re-exported here so existing call sites/tests keep working. See that
+# module's docstring for the full rationale.
+
+# Event callback type threaded through the conversational pipeline for
+# real-time progress reporting (SSE, webhooks, etc.). Emission is always
+# fire-and-forget: a raising callback must never break the pipeline.
+EventCallback = Callable[[str, dict], Awaitable[None]]
+
+
+async def _emit_event(event_cb: EventCallback | None, event_type: str, data: dict) -> None:
+    """Fire an event_cb callback, swallowing (and logging) any failure."""
+    if event_cb is None:
+        return
+    try:
+        await event_cb(event_type, data)
+    except Exception as e:
+        logger.warning(f"event_cb raised for event '{event_type}': {e}")
 
 
 # ── SkillToolResult ─────────────────────────────────────────────
@@ -409,6 +436,15 @@ class AgentRuntime:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        # Outbound workflow events queued during this request, dispatched only
+        # after the session state is committed (avoids phantom events for
+        # transitions a later pipeline failure would roll back).
+        self._pending_events: list[tuple[str, str, dict]] = []
+
+    def _flush_pending_events(self) -> None:
+        events, self._pending_events = self._pending_events, []
+        for tenant_id, event_type, payload in events:
+            emit_event(tenant_id, event_type, payload)
 
     @staticmethod
     def _append_agent_specific_instruction(base_desc: str, trigger_config: dict | None) -> str:
@@ -438,8 +474,18 @@ class AgentRuntime:
 
     # ── Main invoke entry point ──────────────────────────────
 
-    async def invoke(self, req: InvokeRequest) -> InvokeResponse:
-        """Full pipeline: one user message in, one structured response out."""
+    async def invoke(
+        self, req: InvokeRequest, event_cb: EventCallback | None = None,
+    ) -> InvokeResponse:
+        """Full pipeline: one user message in, one structured response out.
+
+        `event_cb`, if given, is an optional `async (event_type, data) -> None`
+        callback invoked for real-time progress events (pre_retrieval,
+        tool_call_started/finished, answer_delta) during the conversational
+        pipeline. It is purely additive and backward compatible — omitting it
+        (the default) reproduces today's behavior exactly. Callback failures
+        are caught and logged; they never interrupt the pipeline.
+        """
 
         # 1. Load agent config
         agent = await self._load_agent(req.agent_id)
@@ -467,7 +513,9 @@ class AgentRuntime:
                 )
 
             # 5. Conversational pipeline
-            return await self._invoke_conversational(agent, session, req, trace_id, audit)
+            return await self._invoke_conversational(
+                agent, session, req, trace_id, audit, event_cb=event_cb,
+            )
         finally:
             # Audit must survive unhandled pipeline exceptions; flush() writes
             # via an independent session and is a no-op when already flushed.
@@ -478,6 +526,7 @@ class AgentRuntime:
     async def _invoke_conversational(
         self, agent: Agent, session: ConversationSession,
         req: InvokeRequest, trace_id: str, audit: AuditLogger,
+        event_cb: EventCallback | None = None,
     ) -> InvokeResponse:
         """Conversation-first pipeline: LLM drives, skills exposed as tools."""
 
@@ -532,17 +581,18 @@ class AgentRuntime:
             knowledge_skills = [s for s in all_skills if s.skill_type == "knowledge_qa"]
             if knowledge_skills:
                 # Use rewritten query for better retrieval
-                history = await self._get_history(session.id, limit=6)
+                history = await self._get_history(session.id, limit=RECENT_WINDOW)
                 retrieval_query = req.message
                 if _needs_query_rewrite(req.message) and history:
-                    retrieval_query = _rewrite_query_with_history(req.message, history)
-                    audit.log("query_rewrite", event_data={
-                        "original": req.message,
-                        "rewritten": retrieval_query,
-                    })
+                    retrieval_query = await self._llm_rewrite_query(
+                        agent, req.message, history, audit,
+                    )
+                domains = [(s.execution_config or {}).get("domain") for s in knowledge_skills]
+                await _emit_event(event_cb, "pre_retrieval", {"domains": domains})
                 pre_context, pre_citations = await self._pre_retrieve(
                     retrieval_query, knowledge_skills, audit,
                 )
+                await _emit_event(event_cb, "pre_retrieval_done", {"hits": len(pre_citations)})
 
         # ── Build skill tools (using pre-loaded skills) ──
         tool_defs, handler_map = await self._build_skill_tools(
@@ -558,7 +608,18 @@ class AgentRuntime:
 
         # ── Build messages ──
         persona = agent.system_prompt or "你是一个智能助手。"
-        history = await self._get_history(session.id, limit=6)
+
+        # Rolling summary: cheap read of whatever a PRIOR turn's background
+        # fold already persisted onto session.context["summary"]. The fold
+        # itself runs off the critical path — see schedule_summary_update()
+        # below, invoked after this turn's answer is saved.
+        summary_text = await self._get_persisted_summary(agent, session, audit)
+        # Cross-session memory seam (not implemented this wave — see method
+        # docstring). Always None today; kept as a single call site so a
+        # future wave can light it up without restructuring this method.
+        longterm_memory = self._load_longterm_memory(agent, req)
+
+        history = await self._get_history(session.id, limit=RECENT_WINDOW)
 
         if pre_context:
             system_msg = CONVERSATIONAL_SYSTEM_PROMPT_WITH_CONTEXT.format(
@@ -576,6 +637,12 @@ class AgentRuntime:
                     role=ctx_msg.get("role", "user"),
                     content=ctx_msg.get("content", ""),
                 ))
+
+        if longterm_memory:
+            messages.append(LLMMessage(role="system", content=longterm_memory))
+
+        if summary_text:
+            messages.append(LLMMessage(role="system", content=f"[对话摘要] {summary_text}"))
 
         for msg in history:
             messages.append(LLMMessage(role=msg.role, content=msg.content))
@@ -611,10 +678,23 @@ class AgentRuntime:
             messages = trim_messages(messages, MAX_INPUT_TOKENS)
 
             try:
-                if tool_defs:
-                    llm_resp = await llm.chat_with_tools(messages, tool_defs)
-                else:
-                    llm_resp = await llm.chat(messages)
+                llm_resp = None
+                if event_cb is not None and hasattr(llm, "chat_stream"):
+                    try:
+                        llm_resp = await self._stream_round(
+                            llm, messages, tool_defs, event_cb,
+                        )
+                    except LLMStreamError as stream_exc:
+                        logger.warning(
+                            f"chat_stream failed for round {round_idx}, "
+                            f"falling back to non-streaming call: {stream_exc}",
+                        )
+                        llm_resp = None
+                if llm_resp is None:
+                    if tool_defs:
+                        llm_resp = await llm.chat_with_tools(messages, tool_defs)
+                    else:
+                        llm_resp = await llm.chat(messages)
             except Exception as e:
                 audit.log("error", event_data={
                     "error": str(e), "round": round_idx, "stage": "llm_call",
@@ -665,6 +745,15 @@ class AgentRuntime:
                 "model": llm_resp.model,
                 "round": round_idx + 1,
                 "has_tool_calls": bool(llm_resp.tool_calls),
+                # Token usage — parsed from the provider's `usage` field in
+                # LLMAdapter.chat()/chat_with_tools(); for the streaming path
+                # (chat_stream) this is best-effort since not every provider
+                # emits a `usage` block on the final SSE chunk. Both default
+                # to 0 when absent, which the usage aggregation endpoint
+                # (GET /audit/usage) treats as "no data" rather than an error.
+                "prompt_tokens": llm_resp.prompt_tokens,
+                "completion_tokens": llm_resp.completion_tokens,
+                "total_tokens": llm_resp.prompt_tokens + llm_resp.completion_tokens,
             }, latency_ms=round_latency)
 
             # No tool calls → final answer
@@ -711,12 +800,20 @@ class AgentRuntime:
                     ))
                     continue
 
+                await _emit_event(event_cb, "tool_call_started", {
+                    "name": tc.function_name, "round": round_idx,
+                })
                 audit.start_timer(f"tool_{tc.id}")
+                tool_ok = False
                 try:
                     result: SkillToolResult = await handler(tc.arguments)
+                    tool_ok = True
                 except Exception as e:
                     logger.warning(f"Skill tool handler error [{tc.function_name}]: {e}")
                     result = SkillToolResult(text=f"Error: {e}")
+                await _emit_event(event_cb, "tool_call_finished", {
+                    "name": tc.function_name, "round": round_idx, "ok": tool_ok,
+                })
 
                 tool_latency = audit.elapsed_ms(f"tool_{tc.id}")
                 audit.log("tool_call", tool_meta={
@@ -783,6 +880,18 @@ class AgentRuntime:
         await self._save_message(session.id, "user", req.message, trace_id)
         await self._save_message(session.id, "assistant", short_answer, trace_id)
         await self._save_session(session)
+        # Session state is committed — safe to dispatch queued workflow events.
+        self._flush_pending_events()
+
+        # Rolling summary fold happens off the critical path: this turn's
+        # rows are now committed, so schedule a background fold (deduped,
+        # non-raising) that the NEXT turn's prompt will see — see
+        # server.engine.summary_scheduler for the one-turn-lag rationale.
+        if (session.message_count or 0) * 2 >= SUMMARY_THRESHOLD:
+            schedule_summary_update(session.id, agent.id)
+            audit.log("summary_scheduled", event_data={
+                "message_count": session.message_count,
+            })
 
         # Followups
         if collected_workflow_card:
@@ -824,6 +933,50 @@ class AgentRuntime:
             skill_info=collected_skill_info[0] if collected_skill_info else None,
             metadata=metadata if len(metadata) > 1 else None,
         )
+
+    async def _stream_round(
+        self, llm, messages: list[LLMMessage], tool_defs: list[dict],
+        event_cb: EventCallback,
+    ):
+        """Run one function-calling round via chat_stream.
+
+        Content deltas are forwarded live as `answer_delta` events the moment
+        they arrive — clients can render tokens as they stream in. This means
+        a round can emit text that turns out to be throwaway, so an
+        `answer_reset` event tells the client to discard whatever partial text
+        it has accumulated for the round in two cases:
+          1. The round ends in tool_calls: any content streamed before the
+             LLM decided to call a tool was never meant to be user-facing.
+          2. The stream fails mid-way (raises, or ends without a final chunk):
+             the non-streaming fallback will produce the real answer, and the
+             client must not append it to stale partial text.
+        The final SSE `answer` event (emitted by the caller once the whole
+        response is assembled) remains authoritative regardless of what was
+        streamed here. Raises LLMStreamError if the stream never produces a
+        final chunk (after emitting `answer_reset` if deltas were sent).
+        """
+        final_response = None
+        emitted = False
+        try:
+            async for chunk in llm.chat_stream(messages, tool_defs or None):
+                if chunk.delta:
+                    emitted = True
+                    await _emit_event(event_cb, "answer_delta", {"text": chunk.delta})
+                if chunk.done:
+                    final_response = chunk.response
+        except Exception:
+            if emitted:
+                await _emit_event(event_cb, "answer_reset", {})
+            raise
+
+        if final_response is None:
+            if emitted:
+                await _emit_event(event_cb, "answer_reset", {})
+            raise LLMStreamError("chat_stream ended without a final response")
+
+        if final_response.tool_calls and emitted:
+            await _emit_event(event_cb, "answer_reset", {})
+        return final_response
 
     # ── Build skill tools ────────────────────────────────────
 
@@ -1192,6 +1345,9 @@ class AgentRuntime:
                 session.workflow_state = None
                 session.active_skill_id = None
                 return SkillToolResult(text=f"流程启动失败: {e}")
+
+            # Defer any queued events until the conversational tail commits.
+            self._pending_events.extend(executor.pending_events)
 
             return SkillToolResult(
                 text=result.message,
@@ -1615,7 +1771,7 @@ class AgentRuntime:
                 audit.log("workflow_step", workflow_meta={
                     "status": result.status, "message": result.message,
                 }, latency_ms=wf_latency)
-                return await self._finalize_workflow_turn(session, req, trace_id, audit, result)
+                return await self._finalize_workflow_turn(session, req, trace_id, audit, result, executor)
 
             canned = '已转人工处理，处理完成后可回复"继续"恢复流程。'
             await self._save_message(session.id, "user", req.message, trace_id)
@@ -1666,11 +1822,11 @@ class AgentRuntime:
             "message": result.message,
         }, latency_ms=wf_latency)
 
-        return await self._finalize_workflow_turn(session, req, trace_id, audit, result)
+        return await self._finalize_workflow_turn(session, req, trace_id, audit, result, executor)
 
     async def _finalize_workflow_turn(
         self, session: ConversationSession, req: InvokeRequest,
-        trace_id: str, audit: AuditLogger, result,
+        trace_id: str, audit: AuditLogger, result, executor=None,
     ) -> InvokeResponse:
         """Shared tail for a workflow turn: terminal cleanup, persistence,
         followups. Only "completed"/"cancelled" are terminal — "escalated"
@@ -1693,6 +1849,10 @@ class AgentRuntime:
         await self._save_message(session.id, "assistant", result.message, trace_id)
         await self._save_session(session)
         await audit.flush()
+        # Session committed — dispatch any events the executor queued this turn.
+        if executor is not None:
+            self._pending_events.extend(executor.pending_events)
+        self._flush_pending_events()
 
         followups = []
         if result.status == "waiting_input":
@@ -1888,15 +2048,108 @@ class AgentRuntime:
         return session
 
     async def _get_history(self, session_id: str, limit: int = 6) -> list[Message]:
+        # Secondary sort on `Message.id` breaks ties when two rows share the
+        # same `created_at` (e.g. sub-millisecond writes) so this query and
+        # `_get_all_history` agree on a single total order — otherwise the
+        # boundary between "already summarized" and "recent window" rows
+        # could disagree between the two queries.
         result = await self.db.execute(
             select(Message)
             .where(Message.session_id == session_id)
-            .order_by(Message.created_at.desc())
+            .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(limit)
         )
         msgs = list(result.scalars().all())
         msgs.reverse()
         return msgs
+
+    # ── Current-session memory (Wave 4 / Workstream M) ──────────
+
+    async def _get_persisted_summary(
+        self, agent: Agent, session: ConversationSession, audit: AuditLogger,
+    ) -> str | None:
+        """Cheap READ of the rolling summary already persisted on
+        `session.context["summary"]` (or None if none exists yet).
+
+        The fold itself (reload full history, re-apply the threshold/window
+        gate, one-shot LLM call, persist + advance the `summarized_upto`
+        watermark) no longer happens here — it runs off the critical path in
+        `server.engine.summary_scheduler.schedule_summary_update`, scheduled
+        after this turn's answer is saved (see the call site in
+        `_invoke_conversational`, right after `_save_session`). This method
+        does no DB scan and no LLM call; it just returns whatever the last
+        completed background fold (from a prior turn) already wrote. `agent`
+        and `audit` are accepted for call-site compatibility but unused —
+        both are still needed by the scheduler, not by this read.
+        """
+        context = session.context or {}
+        return context.get("summary") or None
+
+    async def _llm_rewrite_query(
+        self, agent: Agent, message: str, history_messages: list[Message],
+        audit: AuditLogger,
+    ) -> str:
+        """Resolve pronouns/references in `message` against recent history
+        via a one-shot LLM call, producing a standalone retrieval query.
+
+        `_needs_query_rewrite` already gates most turns out before this is
+        ever called. On any LLM failure this falls back to the string-concat
+        heuristic (`_rewrite_query_with_history`) — this only ever affects
+        the retrieval query, never the user-visible answer.
+        """
+        try:
+            convo_text = "\n".join(f"{m.role}: {m.content}" for m in history_messages)
+            prompt = (
+                "Rewrite the LATEST user message into a standalone search "
+                "query by resolving pronouns and implicit references (e.g. "
+                "\"它\", \"那个\", \"第二个\") using the conversation history. "
+                "If the message is already standalone, return it unchanged. "
+                "Output ONLY the rewritten query text — no quotes, no "
+                "explanation.\n\n"
+                f"Conversation history:\n{convo_text}\n\n"
+                f"Latest user message: {message}"
+            )
+            llm = await get_llm_adapter_for_agent(agent, self.db)
+            resp = await llm.chat(
+                [
+                    LLMMessage(
+                        role="system",
+                        content="Rewrite a context-dependent query into a standalone retrieval query.",
+                    ),
+                    LLMMessage(role="user", content=prompt),
+                ],
+                temperature=0.0,
+                max_tokens=120,
+            )
+            rewritten = (resp.content or "").strip()
+            if rewritten:
+                audit.log("query_rewrite", event_data={
+                    "original": message,
+                    "rewritten": rewritten,
+                    "source": "llm",
+                })
+                return rewritten
+        except Exception as e:
+            audit.log("query_rewrite_llm_error", event_data={"error": str(e)})
+
+        fallback = _rewrite_query_with_history(message, history_messages)
+        audit.log("query_rewrite", event_data={
+            "original": message,
+            "rewritten": fallback,
+            "source": "fallback",
+        })
+        return fallback
+
+    def _load_longterm_memory(self, agent: Agent, req: InvokeRequest) -> str | None:
+        """Cross-session memory hook.
+
+        Cross-session memory not implemented this wave; wire here when
+        needed (e.g. load a persisted long-term profile/summary for this
+        user+agent across sessions and return it as a context string).
+        Returns None today — a strict no-op at the single call site in
+        `_invoke_conversational`.
+        """
+        return None
 
     async def _save_message(
         self, session_id: str, role: str, content: str, trace_id: str,

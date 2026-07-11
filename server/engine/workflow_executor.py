@@ -74,6 +74,17 @@ class WorkflowExecutor:
         self.db = db
         self.tool_gw = tool_gateway
         self.audit = audit
+        # Outbound events are queued here and only dispatched once the caller
+        # commits the session state change they describe — otherwise a
+        # subscriber could receive a workflow.completed/escalated event for a
+        # transition that a later pipeline failure rolls back (phantom
+        # event). AgentRuntime drains this list into its own `_pending_events`
+        # buffer and flushes it via `AgentRuntime._flush_pending_events` after
+        # the session is persisted. Each entry is (tenant_id, event_type, payload).
+        self.pending_events: list[tuple[str, str, dict]] = []
+
+    def _queue_event(self, tenant_id: str, event_type: str, payload: dict) -> None:
+        self.pending_events.append((tenant_id, event_type, payload))
 
     def cancel_workflow(self, session: ConversationSession) -> str:
         """Cancel the current workflow.
@@ -515,6 +526,17 @@ class WorkflowExecutor:
                 # path like human_review's "paused_for_review"), so clear
                 # the workflow ourselves rather than relying on the caller
                 # to treat "escalated" as terminal.
+                workflow_id = (session.workflow_state or {}).get("workflow_id")
+                self._queue_event(
+                    session.tenant_id,
+                    "workflow.escalated",
+                    {
+                        "session_id": session.id,
+                        "workflow_id": workflow_id,
+                        "step_name": step.name,
+                        "reason": f"工具调用失败: {e}",
+                    },
+                )
                 session.workflow_state = None
                 session.collected_data = {}
                 session.active_skill_id = None
@@ -578,6 +600,17 @@ class WorkflowExecutor:
         }
         flag_modified(session, "workflow_state")
 
+        self._queue_event(
+            session.tenant_id,
+            "workflow.escalated",
+            {
+                "session_id": session.id,
+                "workflow_id": (session.workflow_state or {}).get("workflow_id"),
+                "step_name": step.name,
+                "reason": "human_review",
+            },
+        )
+
         return WorkflowStepResult(
             status="escalated",
             message=step.prompt_template or "该步骤需要人工审核，请等待工作人员处理。",
@@ -630,7 +663,22 @@ class WorkflowExecutor:
         if webhook_result:
             card.webhook_result = webhook_result
 
+        workflow_state = session.workflow_state or {}
+        event_payload_base = {
+            "session_id": session.id,
+            "workflow_id": workflow_state.get("workflow_id"),
+            "agent_id": session.agent_id,
+            "idempotency_key": workflow_state.get("idempotency_key"),
+            "data": user_data,
+        }
+
         if webhook_exhausted:
+            error = (collected.get("_webhook_result") or {}).get("error")
+            self._queue_event(
+                session.tenant_id,
+                "workflow.submit_failed",
+                {**event_payload_base, "error": error},
+            )
             # Keep the workflow alive on this same (complete) step so the
             # user's next message can retry instead of hitting a dead end.
             return WorkflowStepResult(
@@ -644,6 +692,8 @@ class WorkflowExecutor:
 
         # Honest completion message: never claim success if the webhook failed
         base_msg = step.prompt_template or "流程已完成！感谢您的办理。"
+
+        self._queue_event(session.tenant_id, "workflow.completed", event_payload_base)
 
         return WorkflowStepResult(
             status="completed",

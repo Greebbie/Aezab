@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Modal, Steps, Button, Form, Input, Select, Space, Spin, message } from 'antd';
+import { Alert, Modal, Steps, Button, Form, Input, Select, Space, Spin, message } from 'antd';
 import {
   UserOutlined,
   RobotOutlined,
@@ -9,8 +9,6 @@ import {
 } from '@ant-design/icons';
 import type { LLMConfig, KnowledgeSource, Workflow, Tool } from '../../types';
 import { agentApi, agentCapabilitiesApi, llmConfigApi, knowledgeApi, workflowApi, toolApi } from '../../api';
-import AgentTemplates from './AgentTemplates';
-import type { AgentTemplate } from './AgentTemplates';
 
 const { TextArea } = Input;
 
@@ -18,9 +16,10 @@ interface AgentWizardProps {
   open: boolean;
   onClose: () => void;
   onCreated: () => void;
+  onSwitchToTemplate: () => void;
 }
 
-export default function AgentWizard({ open, onClose, onCreated }: AgentWizardProps) {
+export default function AgentWizard({ open, onClose, onCreated, onSwitchToTemplate }: AgentWizardProps) {
   const [current, setCurrent] = useState(0);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
@@ -45,14 +44,6 @@ export default function AgentWizard({ open, onClose, onCreated }: AgentWizardPro
       toolApi.list().then((r) => setTools(r.data)).catch(() => {});
     }
   }, [open, form]);
-
-  const applyTemplate = (template: AgentTemplate) => {
-    form.setFieldsValue({
-      name: template.name,
-      description: template.description,
-      system_prompt: template.system_prompt,
-    });
-  };
 
   const handleNext = async () => {
     setLoading(true);
@@ -129,7 +120,17 @@ export default function AgentWizard({ open, onClose, onCreated }: AgentWizardPro
       icon: <UserOutlined />,
       content: (
         <div>
-          <AgentTemplates onSelect={applyTemplate} />
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={(
+              <span>
+                想快速开始？试试{' '}
+                <a onClick={onSwitchToTemplate}>从模板创建</a>
+              </span>
+            )}
+          />
           <Form.Item label="Agent Name" name="name" rules={[{ required: true, message: 'Please enter a name' }]}>
             <Input placeholder="My Agent" />
           </Form.Item>

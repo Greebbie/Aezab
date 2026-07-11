@@ -9,6 +9,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import get_db
+from server.models.agent import Agent
 from server.models.audit import AuditTrace
 from server.middleware.auth import get_current_user, get_tenant_id
 
@@ -195,4 +196,90 @@ async def get_metrics(
         "escalation_count": escalation_count,
         "escalation_rate": round(escalation_count / max(total_invocations, 1) * 100, 2),
         "risk_block_count": risk_block_count,
+    }
+
+
+@router.get("/usage")
+async def get_usage(
+    tenant_id: str = Depends(get_tenant_id),
+    days: int = Query(default=30, ge=1, le=90),
+    db: AsyncSession = Depends(get_db),
+):
+    """Business-facing token usage summary for the trailing `days` window.
+
+    Aggregates `llm_call` audit events (see agent_runtime.py's per-round
+    `audit.log("llm_call", llm_meta={...})` call, which now carries
+    prompt_tokens/completion_tokens/total_tokens alongside model/round).
+    Rows written before token tracking existed, or produced by a streaming
+    response whose provider never echoed a `usage` block on the final SSE
+    chunk, simply contribute 0 tokens — they still count toward
+    `total_invocations` so the numbers never look broken, just incomplete.
+
+    Aggregation happens in Python (not a DB-side JSON extraction) so this
+    works identically on SQLite (dev) and PostgreSQL (prod); the 90-day cap
+    plus the audit retention job (server/engine/retention.py) keep the
+    scanned row count bounded.
+    """
+    since = datetime.utcnow() - timedelta(days=days)
+    result = await db.execute(
+        select(AuditTrace.agent_id, AuditTrace.llm_meta, AuditTrace.timestamp).where(
+            AuditTrace.tenant_id == tenant_id,
+            AuditTrace.event_type == "llm_call",
+            AuditTrace.timestamp >= since,
+        )
+    )
+    rows = result.all()
+
+    total_invocations = 0
+    total_prompt = 0
+    total_completion = 0
+    by_day: dict[str, dict[str, int]] = {}
+    by_agent: dict[str, dict[str, int]] = {}
+
+    for agent_id, llm_meta, timestamp in rows:
+        total_invocations += 1
+        meta = llm_meta or {}
+        prompt = int(meta.get("prompt_tokens") or 0)
+        completion = int(meta.get("completion_tokens") or 0)
+        total_prompt += prompt
+        total_completion += completion
+        tokens = prompt + completion
+
+        day_key = (timestamp or datetime.utcnow()).strftime("%Y-%m-%d")
+        day_entry = by_day.setdefault(day_key, {"invocations": 0, "tokens": 0})
+        day_entry["invocations"] += 1
+        day_entry["tokens"] += tokens
+
+        agent_entry = by_agent.setdefault(agent_id, {"invocations": 0, "tokens": 0})
+        agent_entry["invocations"] += 1
+        agent_entry["tokens"] += tokens
+
+    # Resolve display names for the agents that actually appear in this
+    # window (best-effort — a deleted agent just falls back to its raw id).
+    agent_names: dict[str, str] = {}
+    if by_agent:
+        name_rows = await db.execute(
+            select(Agent.id, Agent.name).where(Agent.id.in_(list(by_agent.keys())))
+        )
+        agent_names = dict(name_rows.all())
+
+    return {
+        "period_days": days,
+        "total_invocations": total_invocations,
+        "total_tokens": total_prompt + total_completion,
+        "prompt_tokens": total_prompt,
+        "completion_tokens": total_completion,
+        "by_day": [
+            {"date": day, "invocations": v["invocations"], "tokens": v["tokens"]}
+            for day, v in sorted(by_day.items())
+        ],
+        "by_agent": [
+            {
+                "agent_id": agent_id,
+                "agent_name": agent_names.get(agent_id, agent_id),
+                "invocations": v["invocations"],
+                "tokens": v["tokens"],
+            }
+            for agent_id, v in sorted(by_agent.items(), key=lambda kv: -kv[1]["tokens"])
+        ],
     }

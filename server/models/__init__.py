@@ -9,6 +9,7 @@ from server.models.skill import Skill
 from server.models.agent_skill import AgentSkill
 from server.models.agent_connection import AgentConnection
 from server.models.user import User, APIKey
+from server.models.subscription import EventSubscription
 
 __all__ = [
     "Agent",
@@ -27,4 +28,5 @@ __all__ = [
     "AgentConnection",
     "User",
     "APIKey",
+    "EventSubscription",
 ]

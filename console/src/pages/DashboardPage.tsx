@@ -11,11 +11,15 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   ExclamationCircleOutlined,
+  RocketOutlined,
+  FundOutlined,
 } from '@ant-design/icons';
+import { OPEN_SETUP_WIZARD_EVENT } from '../components/setup';
 import { useTranslation } from 'react-i18next';
 import { auditApi, agentApi, performanceApi } from '../api';
-import type { AuditMetrics } from '../types';
+import type { AuditMetrics, UsageSummary } from '../types';
 import { HelpLabel, PageHeader } from '../components/shared';
+import { friendlyError } from '../utils/friendlyError';
 
 interface CircuitStatus {
   service: string;
@@ -31,6 +35,8 @@ export default function DashboardPage() {
   const [circuits, setCircuits] = useState<CircuitStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -49,6 +55,16 @@ export default function DashboardPage() {
       setError(`${t('common.error')}: ${msg}`);
     } finally {
       setLoading(false);
+    }
+
+    // Usage stats are a secondary, non-blocking signal — a failure here
+    // must not take down the rest of the dashboard.
+    setUsageError(null);
+    try {
+      const usageRes = await auditApi.getUsage({ days: 30 });
+      setUsage(usageRes.data);
+    } catch (e: unknown) {
+      setUsageError(friendlyError(e, t));
     }
   }, [t]);
 
@@ -131,6 +147,26 @@ export default function DashboardPage() {
       />
 
       {error && <Alert message={error} type="error" style={{ marginBottom: 16 }} closable />}
+
+      {agentCount === 0 && (
+        <Card className="aezab-card" style={{ marginBottom: 16 }}>
+          <Space align="center" size={16} style={{ width: '100%', justifyContent: 'space-between' }} wrap>
+            <Space direction="vertical" size={4}>
+              <Typography.Text strong style={{ fontSize: 16 }}>
+                {t('dashboard.setupCta.title')}
+              </Typography.Text>
+              <Typography.Text type="secondary">{t('dashboard.setupCta.description')}</Typography.Text>
+            </Space>
+            <Button
+              type="primary"
+              icon={<RocketOutlined />}
+              onClick={() => window.dispatchEvent(new CustomEvent(OPEN_SETUP_WIZARD_EVENT))}
+            >
+              {t('dashboard.setupCta.action')}
+            </Button>
+          </Space>
+        </Card>
+      )}
 
       <Card className="aezab-card" style={{ marginBottom: 16 }}>
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -237,6 +273,68 @@ export default function DashboardPage() {
                 pagination={false}
                 rowKey="service"
               />
+            )}
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24}>
+          <Card
+            title={(
+              <>
+                <FundOutlined />{' '}
+                <HelpLabel label={t('dashboard.usage.title')} help={t('dashboard.help.usage')} />
+              </>
+            )}
+            size="small"
+            className="aezab-card"
+          >
+            {usageError && (
+              <Alert message={usageError} type="warning" showIcon style={{ marginBottom: 12 }} />
+            )}
+            <Row gutter={[16, 16]}>
+              <Col xs={12} md={6}>
+                <Statistic title={t('dashboard.usage.totalTokens')} value={usage?.total_tokens || 0} />
+              </Col>
+              <Col xs={12} md={6}>
+                <Statistic title={t('dashboard.usage.totalInvocations')} value={usage?.total_invocations || 0} />
+              </Col>
+              <Col xs={12} md={6}>
+                <Statistic title={t('dashboard.usage.promptTokens')} value={usage?.prompt_tokens || 0} />
+              </Col>
+              <Col xs={12} md={6}>
+                <Statistic title={t('dashboard.usage.completionTokens')} value={usage?.completion_tokens || 0} />
+              </Col>
+            </Row>
+
+            {!usage || usage.total_invocations === 0 ? (
+              <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
+                {t('dashboard.usage.noData')}
+              </Typography.Text>
+            ) : (
+              <div style={{ marginTop: 16 }}>
+                <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+                  {t('dashboard.usage.byDay')}
+                </Typography.Text>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 80 }}>
+                  {(() => {
+                    const maxTokens = Math.max(...usage.by_day.map((d) => d.tokens), 1);
+                    return usage.by_day.map((d) => {
+                      const heightPct = d.tokens > 0 ? Math.max((d.tokens / maxTokens) * 100, 4) : 0;
+                      return (
+                        <div
+                          key={d.date}
+                          title={`${d.date}: ${d.tokens} tokens / ${d.invocations} ${t('dashboard.usage.totalInvocations')}`}
+                          style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%' }}
+                        >
+                          <div style={{ background: '#1677ff', borderRadius: 2, height: `${heightPct}%` }} />
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
             )}
           </Card>
         </Col>

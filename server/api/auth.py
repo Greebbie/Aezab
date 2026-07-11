@@ -1,6 +1,7 @@
 """Authentication API endpoints.
 
 Provides:
+- GET  /auth/status      — public bootstrap check for the console's AuthGate
 - POST /auth/login       — authenticate with username/password, receive JWT
 - POST /auth/register    — create new user (admin-only, or first user auto-admin)
 - GET  /auth/me          — get current user info
@@ -46,6 +47,25 @@ from server.schemas.auth import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.get("/status")
+async def auth_status(db: AsyncSession = Depends(get_db)) -> dict[str, bool]:
+    """Public bootstrap endpoint used by the console's AuthGate.
+
+    Tells the frontend, before any credentials exist, whether it should
+    render the app directly (auth disabled), show a first-run "create
+    admin account" screen (no users yet), or show the login screen.
+    Intentionally returns only two booleans — no user data, counts, or
+    other details that could help an attacker profile the deployment.
+    """
+    if settings.disable_auth:
+        return {"auth_disabled": True, "needs_setup": False}
+
+    count_result = await db.execute(select(func.count(User.id)))
+    user_count = count_result.scalar() or 0
+
+    return {"auth_disabled": False, "needs_setup": user_count == 0}
 
 
 @router.post("/login", response_model=TokenResponse)

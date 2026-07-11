@@ -39,3 +39,29 @@ export interface AuditMetrics {
   escalation_rate: number;
   top_agents: Array<{ agent_id: string; count: number }>;
 }
+
+// GET /audit/usage — business-facing token usage summary (see
+// server/api/audit.py::get_usage). Aggregated from `llm_call` audit
+// events; rows predating token tracking simply contribute 0 tokens.
+export interface UsageByDay {
+  date: string;
+  invocations: number;
+  tokens: number;
+}
+
+export interface UsageByAgent {
+  agent_id: string;
+  agent_name: string;
+  invocations: number;
+  tokens: number;
+}
+
+export interface UsageSummary {
+  period_days: number;
+  total_invocations: number;
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  by_day: UsageByDay[];
+  by_agent: UsageByAgent[];
+}

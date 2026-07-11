@@ -7,3 +7,8 @@ export * from './llm';
 export * from './audit';
 export * from './invoke';
 export * from './common';
+export * from './template';
+export * from './subscription';
+export * from './auth';
+export * from './backup';
+export * from './session';

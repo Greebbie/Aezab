@@ -16,7 +16,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -25,6 +25,24 @@ from server.engine.circuit_breaker import circuit_breaker
 from server.exceptions import LLMError, LLMModelError, LLMRateLimitError, LLMTimeoutError
 
 logger = logging.getLogger(__name__)
+
+
+class LLMStreamError(LLMError):
+    """Raised when a token-streaming request fails mid-flight.
+
+    Callers (agent_runtime's tool loop) catch this specifically and fall back
+    to the existing non-streaming chat()/chat_with_tools() call for that
+    round — streaming is strictly additive and never the only path.
+    """
+
+    def __init__(
+        self,
+        message: str = "LLM stream error",
+        provider: str = "",
+        model: str = "",
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message, provider, model, detail)
 
 
 @dataclass
@@ -58,6 +76,35 @@ class LLMResponse:
     tool_calls: list[ToolCallRequest] | None = None
     # Reasoning/thinking content (Qwen3, DeepSeek-R1, etc.)
     reasoning: str | None = None
+
+
+@dataclass
+class StreamChunk:
+    """A single incremental unit yielded by `LLMAdapter.chat_stream`."""
+    delta: str = ""                      # incremental content text
+    done: bool = False
+    response: LLMResponse | None = None  # set on the final chunk (full accumulated response, incl. tool_calls)
+
+
+def _merge_tool_call_deltas(acc: dict[int, dict], deltas: list[dict]) -> None:
+    """Merge OpenAI-style streamed tool_call fragments into `acc`, keyed by index.
+
+    Streaming tool_calls arrive as partial deltas indexed by position: the
+    `id`/`name` typically arrive whole in the first fragment for that index,
+    while `arguments` arrive incrementally and must be concatenated.
+    """
+    for d in deltas:
+        idx = d.get("index", 0)
+        entry = acc.setdefault(idx, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+        if d.get("id"):
+            entry["id"] = d["id"]
+        if d.get("type"):
+            entry["type"] = d["type"]
+        func_delta = d.get("function") or {}
+        if func_delta.get("name"):
+            entry["function"]["name"] += func_delta["name"]
+        if func_delta.get("arguments"):
+            entry["function"]["arguments"] += func_delta["arguments"]
 
 
 # Pattern to match <think>...</think> blocks in content (vLLM-served models)
@@ -390,6 +437,173 @@ class LLMAdapter:
             reasoning=reasoning if reasoning else None,
         )
 
+    async def chat_stream(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict] | None = None,
+        **kwargs,
+    ) -> AsyncIterator[StreamChunk]:
+        """Token-streaming chat completion (OpenAI-compatible SSE wire format).
+
+        Yields `StreamChunk(delta=...)` for each incremental content piece,
+        followed by a final `StreamChunk(done=True, response=<full LLMResponse>)`
+        once the stream ends. `tool_calls` fragments (indexed partial deltas)
+        are merged by index; reasoning/reasoning_content deltas are buffered
+        silently and only surfaced (via content extraction) if final content
+        is empty — mirroring the non-streaming reasoning-model handling above.
+
+        This method does NOT modify chat()/chat_with_tools() and is not used
+        unless a caller explicitly opts into streaming. Any failure mid-flight
+        raises `LLMStreamError`; callers should catch it and fall back to the
+        non-streaming calls for that round.
+        """
+        t0 = time.perf_counter()
+        model = kwargs.get("model", self.model)
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": self._serialize_messages(messages),
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "stream": True,
+            # Standard OpenAI-compatible opt-in for a final SSE chunk that
+            # carries the `usage` block (without it, providers — MiniMax
+            # included, verified empirically — omit usage entirely on
+            # streamed responses, which is why audit traces showed 0 tokens
+            # for the SSE path). Providers that don't recognize this field
+            # are expected to ignore unknown JSON keys per the OpenAI-compatible
+            # convention; if a specific provider ever hard-errors on it, add
+            # a per-provider opt-out here rather than removing it globally.
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            formatted_tools = []
+            for t in tools:
+                if "type" in t and "function" in t:
+                    formatted_tools.append(t)  # already in OpenAI format
+                else:
+                    formatted_tools.append({"type": "function", "function": t})
+            payload["tools"] = formatted_tools
+
+        service_name = f"llm:{self.base_url}"
+        if not circuit_breaker.can_execute(service_name):
+            raise LLMStreamError(
+                f"Circuit breaker open for {self.base_url}",
+                provider=self.base_url,
+                model=model,
+            )
+
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_call_acc: dict[int, dict] = {}
+        final_model = model
+        usage: dict[str, Any] = {}
+
+        try:
+            async with self._make_client() as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=self._headers(),
+                ) as resp:
+                    resp.raise_for_status()
+                    async for raw_line in resp.aiter_lines():
+                        if not raw_line:
+                            continue
+                        line = raw_line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:"):].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        final_model = chunk.get("model") or final_model
+                        if chunk.get("usage"):
+                            usage = chunk["usage"]
+
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+
+                        piece = delta.get("content")
+                        if piece:
+                            content_parts.append(piece)
+                            yield StreamChunk(delta=piece)
+
+                        reasoning_piece = delta.get("reasoning") or delta.get("reasoning_content")
+                        if reasoning_piece:
+                            reasoning_parts.append(reasoning_piece)
+
+                        tc_deltas = delta.get("tool_calls")
+                        if tc_deltas:
+                            _merge_tool_call_deltas(tool_call_acc, tc_deltas)
+            circuit_breaker.record_success(service_name)
+        except LLMStreamError:
+            circuit_breaker.record_failure(service_name)
+            raise
+        except Exception as exc:
+            circuit_breaker.record_failure(service_name)
+            raise LLMStreamError(
+                f"LLM stream error: {exc}",
+                provider=self.base_url,
+                model=model,
+                detail={"original_error": str(exc)},
+            ) from exc
+
+        content = "".join(content_parts)
+        reasoning = "".join(reasoning_parts)
+
+        # Strip <think> tags that may have accumulated in streamed content
+        # (mirrors chat()/chat_with_tools() handling for vLLM-served models).
+        content, think_text = _strip_think_tags(content)
+        if think_text:
+            reasoning = think_text if not reasoning else reasoning
+
+        tool_calls: list[ToolCallRequest] | None = None
+        if tool_call_acc:
+            tool_calls = []
+            for idx in sorted(tool_call_acc.keys()):
+                entry = tool_call_acc[idx]
+                func = entry.get("function", {})
+                arguments_str = func.get("arguments") or "{}"
+                try:
+                    args = json.loads(arguments_str)
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                tool_calls.append(ToolCallRequest(
+                    id=entry.get("id", ""),
+                    function_name=func.get("name", ""),
+                    arguments=args,
+                    raw={
+                        "id": entry.get("id", ""),
+                        "type": entry.get("type", "function"),
+                        "function": {
+                            "name": func.get("name", ""),
+                            "arguments": arguments_str,
+                        },
+                    },
+                ))
+
+        # If no tool calls and content is empty, extract from reasoning
+        if not tool_calls and not content.strip() and reasoning.strip():
+            content = _extract_content_from_reasoning(reasoning)
+
+        final_response = LLMResponse(
+            content=content,
+            model=final_model,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            latency_ms=(time.perf_counter() - t0) * 1000,
+            raw={},
+            tool_calls=tool_calls,
+            reasoning=reasoning if reasoning else None,
+        )
+        yield StreamChunk(delta="", done=True, response=final_response)
 
 
 # Thread-safe singleton default adapter
@@ -409,10 +623,19 @@ def get_llm_adapter(**kwargs) -> LLMAdapter:
 
 
 def _adapter_from_config(config) -> LLMAdapter:
-    """Create an LLMAdapter from a DB LLMConfig record."""
+    """Create an LLMAdapter from a DB LLMConfig record.
+
+    `config.api_key` is stored encrypted at rest (see
+    `server.engine.secrets_store`) — decrypt it here so callers of this
+    adapter always get the real credential. `decrypt_secret` transparently
+    passes through legacy plaintext rows and returns "" on a corrupt/
+    unrecoverable token rather than raising.
+    """
+    from server.engine.secrets_store import decrypt_secret
+
     return LLMAdapter(
         base_url=config.base_url,
-        api_key=config.api_key,
+        api_key=decrypt_secret(config.api_key),
         model=config.model,
         temperature=config.temperature,
         max_tokens=config.max_tokens,

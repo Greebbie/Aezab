@@ -45,8 +45,13 @@ console/.next/
 # Data (DB, vectors, uploads, cache)
 data/
 
-# Pre-built frontend
-static/
+# Pre-built frontend (console build output copied in at Docker build time —
+# not source). widget.js is hand-written source that must live at this path
+# to be served by server/main.py's static mount, so it is excluded from the
+# blanket ignore below. (Directory-level "static/" would also hide negated
+# files inside it, so this ignores direct entries instead.)
+static/*
+!static/widget.js
 
 # AI tooling and local workspace instructions (internal, not for repo)
 .claude/
@@ -62,6 +67,7 @@ progress.md
 *progress*.md
 
 # Local evaluation/demo artifacts (not part of the public repo)
+# internal AI-session plans/specs, never publish
 docs/superpowers/
 docs/demo-scenarios.md
 docs/functional-architecture-evaluation-*.md

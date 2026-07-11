@@ -1,18 +1,20 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
   Table, Button, Modal, Form, Input, Switch, Space, message, Tag,
-  Popconfirm, Select, Collapse, Typography, Tabs, Card, Divider, Alert,
+  Popconfirm, Select, Collapse, Typography, Tabs, Card, Divider, Alert, Upload,
 } from 'antd';
 import {
-  PlusOutlined, EditOutlined, DeleteOutlined, MinusCircleOutlined,
+  PlusOutlined, EditOutlined, DeleteOutlined, MinusCircleOutlined, ThunderboltOutlined,
+  DownloadOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import {
   agentApi, agentCapabilitiesApi, agentConnectionApi,
   workflowApi, toolApi, knowledgeApi, llmConfigApi,
 } from '../api';
-import { AgentWizard } from '../components/agent';
+import { AgentWizard, TemplateStampModal } from '../components/agent';
 import { HelpLabel, HelpTooltip } from '../components/shared';
 import { useTranslation } from 'react-i18next';
+import { friendlyError } from '../utils/friendlyError';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -29,6 +31,7 @@ export default function AgentsPage() {
   const [agents, setAgents] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [activeTab, setActiveTab] = useState('basic');
@@ -60,8 +63,8 @@ export default function AgentsPage() {
       ]);
       setAgents(agentRes.data);
       setLlmConfigs(llmRes.data);
-    } catch (e: any) {
-      message.error('Failed to load agents: ' + (e.message || 'unknown'));
+    } catch (e) {
+      message.error(`Failed to load agents: ${friendlyError(e, t)}`);
     } finally {
       setLoading(false);
     }
@@ -87,8 +90,8 @@ export default function AgentsPage() {
       setTools(toolRes.data);
       setSources(srcRes.data);
       setLlmConfigs(llmRes.data);
-    } catch (e: any) {
-      message.error('Failed to load agent details: ' + (e.message || 'unknown'));
+    } catch (e) {
+      message.error(`Failed to load agent details: ${friendlyError(e, t)}`);
     } finally {
       setCapLoading(false);
     }
@@ -144,7 +147,7 @@ export default function AgentsPage() {
       loadAgents();
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('Save failed: ' + (e.response?.data?.detail || e.message || 'unknown'));
+      message.error(`Save failed: ${friendlyError(e, t)}`);
     }
   };
 
@@ -155,8 +158,8 @@ export default function AgentsPage() {
       const res = await agentCapabilitiesApi.update(editing.id, capabilities);
       setCapabilities(res.data);
       message.success('Capabilities saved');
-    } catch (e: any) {
-      message.error('Save capabilities failed: ' + (e.response?.data?.detail || e.message || 'unknown'));
+    } catch (e) {
+      message.error(`Save capabilities failed: ${friendlyError(e, t)}`);
     } finally {
       setCapSaving(false);
     }
@@ -167,9 +170,41 @@ export default function AgentsPage() {
       await agentApi.delete(id);
       message.success('Deleted');
       loadAgents();
-    } catch (e: any) {
-      message.error('Delete failed: ' + (e.response?.data?.detail || e.message || 'unknown'));
+    } catch (e) {
+      message.error(`Delete failed: ${friendlyError(e, t)}`);
     }
+  };
+
+  const handleExport = async (record: { id: string; name: string }) => {
+    try {
+      const res = await agentApi.export(record.id);
+      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${record.name}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      message.error(`Export failed: ${friendlyError(e, t)}`);
+    }
+  };
+
+  const handleImportFile = (file: File): boolean => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const text = typeof reader.result === 'string' ? reader.result : '';
+        const data = JSON.parse(text) as Record<string, unknown>;
+        await agentApi.import(data);
+        message.success('Agent imported');
+        loadAgents();
+      } catch (e) {
+        message.error(`Import failed: ${friendlyError(e, t)}`);
+      }
+    };
+    reader.readAsText(file);
+    return false;
   };
 
   const openCreate = () => {
@@ -219,8 +254,8 @@ export default function AgentsPage() {
       setConnDesc('');
       const connRes = await agentConnectionApi.list('default', editing.id);
       setConnections(connRes.data);
-    } catch (e: any) {
-      message.error('Add connection failed: ' + (e.response?.data?.detail || e.message || 'unknown'));
+    } catch (e) {
+      message.error(`Add connection failed: ${friendlyError(e, t)}`);
     }
   };
 
@@ -232,8 +267,8 @@ export default function AgentsPage() {
         const connRes = await agentConnectionApi.list('default', editing.id);
         setConnections(connRes.data);
       }
-    } catch (e: any) {
-      message.error('Delete connection failed: ' + (e.response?.data?.detail || e.message || 'unknown'));
+    } catch (e) {
+      message.error(`Delete connection failed: ${friendlyError(e, t)}`);
     }
   };
 
@@ -342,6 +377,7 @@ export default function AgentsPage() {
       title: 'Actions', key: 'actions', render: (_: any, record: any) => (
         <Space>
           <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)}>Edit</Button>
+          <Button icon={<DownloadOutlined />} size="small" onClick={() => handleExport(record)}>Export</Button>
           <Popconfirm title="确定删除此智能体及其自动管理的技能？" onConfirm={() => handleDelete(record.id)} okText="Confirm" cancelText="Cancel">
             <Button icon={<DeleteOutlined />} size="small" danger>Delete</Button>
           </Popconfirm>
@@ -661,9 +697,17 @@ export default function AgentsPage() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <h2>Agent Management</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setWizardOpen(true)}>
-          Create Agent
-        </Button>
+        <Space>
+          <Upload accept=".json" showUploadList={false} beforeUpload={handleImportFile}>
+            <Button icon={<UploadOutlined />}>Import</Button>
+          </Upload>
+          <Button icon={<PlusOutlined />} onClick={() => setWizardOpen(true)}>
+            Create from Scratch
+          </Button>
+          <Button type="primary" icon={<ThunderboltOutlined />} onClick={() => setTemplateModalOpen(true)}>
+            {t('agentTemplates.fromTemplate')}
+          </Button>
+        </Space>
       </div>
       <Table dataSource={agents} columns={columns} rowKey="id" loading={loading} />
 
@@ -690,6 +734,13 @@ export default function AgentsPage() {
       <AgentWizard
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
+        onCreated={loadAgents}
+        onSwitchToTemplate={() => { setWizardOpen(false); setTemplateModalOpen(true); }}
+      />
+
+      <TemplateStampModal
+        open={templateModalOpen}
+        onClose={() => setTemplateModalOpen(false)}
         onCreated={loadAgents}
       />
     </div>

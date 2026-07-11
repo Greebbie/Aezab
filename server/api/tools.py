@@ -11,6 +11,7 @@ from server.models.tool import ToolDefinition
 from server.schemas.tool import ToolCreate, ToolUpdate, ToolOut, ToolTestRequest, ToolTestResponse
 from server.engine.tool_gateway import ToolGateway
 from server.middleware.auth import get_current_user, get_tenant_id
+from server.api._usage_check import get_resource_usage
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -60,6 +61,23 @@ async def get_tool(
     if not tool:
         raise HTTPException(404, "Tool not found")
     return tool
+
+
+@router.get("/{tool_id}/usage")
+async def get_tool_usage(
+    tool_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    """Report which agents currently depend on this tool."""
+    result = await db.execute(
+        select(ToolDefinition).where(ToolDefinition.id == tool_id, ToolDefinition.tenant_id == tenant_id)
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(404, "Tool not found")
+    return await get_resource_usage(
+        db, tenant_id,
+        skill_type="tool_call",
+        matches=lambda ec: tool_id in (ec.get("tool_ids") or []),
+    )
 
 
 @router.put("/{tool_id}", response_model=ToolOut)

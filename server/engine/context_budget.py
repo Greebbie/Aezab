@@ -5,10 +5,12 @@ token each, other chars ~0.25. Good enough for guardrails, not billing.
 """
 from __future__ import annotations
 
-import os
+from server.config import env_str
 
-MAX_TOOL_RESULT_TOKENS = int(os.getenv("HLAB_MAX_TOOL_RESULT_TOKENS", "2000"))
-MAX_INPUT_TOKENS = int(os.getenv("HLAB_MAX_INPUT_TOKENS", "24000"))
+# Env: AEZAB_MAX_TOOL_RESULT_TOKENS / AEZAB_MAX_INPUT_TOKENS (legacy HLAB_
+# names accepted as fallback).
+MAX_TOOL_RESULT_TOKENS = int(env_str("MAX_TOOL_RESULT_TOKENS", "2000"))
+MAX_INPUT_TOKENS = int(env_str("MAX_INPUT_TOKENS", "24000"))
 
 _TRUNCATE_MARKER = "\n…[内容已截断]"
 

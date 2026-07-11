@@ -1,160 +1,68 @@
 import { useEffect, useState } from 'react';
-import {
-  Table, Button, Modal, Form, Input, InputNumber, Select, Switch,
-  Space, message, Tag, Card, Popconfirm, Descriptions,
-} from 'antd';
-import {
-  PlusOutlined, EditOutlined, DeleteOutlined, ExperimentOutlined,
-  CrownOutlined, DownloadOutlined,
-} from '@ant-design/icons';
+import { Table, Button, Space, message, Tag, Popconfirm } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
+import { PlusOutlined, EditOutlined, DeleteOutlined, CrownOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import { llmConfigApi } from '../api';
+import { friendlyError } from '../utils/friendlyError';
+import LLMConfigModal, { LLMConfigWithTopP } from '../components/settings/LLMConfigModal';
 
 export default function LLMConfigsPage() {
-  const [configs, setConfigs] = useState<any[]>([]);
+  const { t } = useTranslation();
+  const [configs, setConfigs] = useState<LLMConfigWithTopP[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing] = useState<any>(null);
-  const [templates, setTemplates] = useState<Record<string, any>>({});
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<any>(null);
-  const [form] = Form.useForm();
+  const [editing, setEditing] = useState<LLMConfigWithTopP | null>(null);
 
   const load = async () => {
     setLoading(true);
     try {
       const res = await llmConfigApi.list();
-      setConfigs(res.data);
-    } catch {
-      message.error('Failed to load LLM configs');
+      setConfigs(res.data as LLMConfigWithTopP[]);
+    } catch (err) {
+      message.error(friendlyError(err, t));
     } finally {
       setLoading(false);
     }
   };
 
-  const loadTemplates = async () => {
-    try {
-      const res = await llmConfigApi.getTemplates();
-      setTemplates(res.data);
-    } catch {
-      message.error('Failed to load provider templates');
-    }
-  };
-
   useEffect(() => {
     load();
-    loadTemplates();
   }, []);
 
   const openCreate = () => {
     setEditing(null);
-    form.resetFields();
-    setTestResult(null);
     setModalOpen(true);
   };
 
-  const openEdit = (record: any) => {
+  const openEdit = (record: LLMConfigWithTopP) => {
     setEditing(record);
-    form.setFieldsValue(record);
-    setTestResult(null);
     setModalOpen(true);
   };
 
-  const handleSave = async () => {
-    try {
-      const values = await form.validateFields();
-      if (editing) {
-        await llmConfigApi.update(editing.id, values);
-        message.success('LLM configuration updated');
-      } else {
-        await llmConfigApi.create(values);
-        message.success('LLM configuration created');
-      }
-      setModalOpen(false);
-      setEditing(null);
-      form.resetFields();
-      setTestResult(null);
-      load();
-    } catch (err: any) {
-      if (err?.errorFields) return; // form validation error, handled by antd
-      message.error('Failed to save LLM configuration: ' + (err?.response?.data?.detail || err.message));
-    }
+  const handleModalSaved = () => {
+    setModalOpen(false);
+    setEditing(null);
+    load();
   };
 
   const handleDelete = async (id: string) => {
     try {
       await llmConfigApi.delete(id);
-      message.success('LLM configuration deleted');
+      message.success(t('llmConfigs.deleteSuccess'));
       load();
-    } catch (err: any) {
-      message.error('Failed to delete: ' + (err?.response?.data?.detail || err.message));
+    } catch (err) {
+      message.error(friendlyError(err, t));
     }
   };
 
   const handleSetDefault = async (id: string) => {
     try {
       await llmConfigApi.setDefault(id);
-      message.success('Default configuration updated');
+      message.success(t('llmConfigs.setDefaultSuccess'));
       load();
-    } catch (err: any) {
-      message.error('Failed to set default: ' + (err?.response?.data?.detail || err.message));
-    }
-  };
-
-  const handleLoadTemplate = () => {
-    const provider = form.getFieldValue('provider');
-    if (!provider) {
-      message.warning('Please select a provider first');
-      return;
-    }
-    // Map provider value to template key
-    let templateKey = provider;
-    if (provider === 'local') templateKey = 'ollama';
-    if (provider === 'vllm') templateKey = 'vllm';
-    const template = templates[templateKey] || templates[provider];
-    if (!template) {
-      message.warning(`No template found for provider "${provider}"`);
-      return;
-    }
-    form.setFieldsValue({
-      provider: template.provider,
-      base_url: template.base_url,
-      model: template.model,
-      temperature: template.temperature,
-      top_p: template.top_p,
-      max_tokens: template.max_tokens,
-      timeout_ms: template.timeout_ms,
-    });
-    message.success(`Template loaded for ${templateKey}`);
-  };
-
-  const handleTestConfig = async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const values = await form.validateFields(['base_url', 'model']);
-      const formValues = form.getFieldsValue();
-      const res = await llmConfigApi.test({
-        base_url: formValues.base_url || values.base_url,
-        api_key: formValues.api_key || '',
-        model: formValues.model || values.model,
-        temperature: formValues.temperature ?? 0.3,
-        max_tokens: 256,
-        timeout_ms: formValues.timeout_ms ?? 30000,
-      });
-      setTestResult(res.data);
-      if (res.data.success) {
-        message.success(`Test passed (${res.data.latency_ms?.toFixed(0)}ms)`);
-      } else {
-        message.error(`Test failed: ${res.data.error}`);
-      }
-    } catch (err: any) {
-      if (err?.errorFields) {
-        message.warning('Please fill in base_url and model before testing');
-      } else {
-        message.error('Test request failed: ' + (err?.response?.data?.detail || err.message));
-      }
-    } finally {
-      setTesting(false);
+    } catch (err) {
+      message.error(friendlyError(err, t));
     }
   };
 
@@ -168,50 +76,50 @@ export default function LLMConfigsPage() {
     }
   };
 
-  const columns = [
+  const columns: ColumnsType<LLMConfigWithTopP> = [
     {
-      title: 'Name',
+      title: t('common.name'),
       dataIndex: 'name',
       key: 'name',
-      render: (name: string, record: any) => (
+      render: (name: string, record) => (
         <Space>
           {name}
-          {record.is_default && <Tag color="gold" icon={<CrownOutlined />}>Default</Tag>}
+          {record.is_default && <Tag color="gold" icon={<CrownOutlined />}>{t('llmConfigs.defaultTag')}</Tag>}
         </Space>
       ),
     },
     {
-      title: 'Provider',
+      title: t('llmConfigs.provider'),
       dataIndex: 'provider',
       key: 'provider',
       render: (v: string) => <Tag color={providerColor(v)}>{v}</Tag>,
     },
-    { title: 'Model', dataIndex: 'model', key: 'model' },
-    { title: 'Base URL', dataIndex: 'base_url', key: 'base_url', ellipsis: true },
+    { title: t('llmConfigs.model'), dataIndex: 'model', key: 'model' },
+    { title: t('llmConfigs.baseUrl'), dataIndex: 'base_url', key: 'base_url', ellipsis: true },
     {
-      title: 'Temperature',
+      title: t('llmConfigs.temperature'),
       dataIndex: 'temperature',
       key: 'temperature',
       width: 100,
     },
     {
-      title: 'Max Tokens',
+      title: t('llmConfigs.maxTokens'),
       dataIndex: 'max_tokens',
       key: 'max_tokens',
       width: 100,
     },
     {
-      title: 'Created',
+      title: t('llmConfigs.columnCreated'),
       dataIndex: 'created_at',
       key: 'created_at',
       width: 180,
       render: (v: string) => v ? new Date(v).toLocaleString() : '-',
     },
     {
-      title: 'Actions',
+      title: t('common.actions'),
       key: 'actions',
       width: 280,
-      render: (_: any, record: any) => (
+      render: (_, record) => (
         <Space>
           {!record.is_default && (
             <Button
@@ -219,7 +127,7 @@ export default function LLMConfigsPage() {
               size="small"
               onClick={() => handleSetDefault(record.id)}
             >
-              Set Default
+              {t('llmConfigs.setDefault')}
             </Button>
           )}
           <Button
@@ -227,18 +135,18 @@ export default function LLMConfigsPage() {
             size="small"
             onClick={() => openEdit(record)}
           >
-            Edit
+            {t('common.edit')}
           </Button>
           <Popconfirm
-            title="Delete this LLM configuration?"
-            description="This action cannot be undone."
+            title={t('llmConfigs.deleteConfirm')}
+            description={t('llmConfigs.deleteConfirmDescription')}
             onConfirm={() => handleDelete(record.id)}
-            okText="Delete"
-            cancelText="Cancel"
+            okText={t('common.delete')}
+            cancelText={t('common.cancel')}
             okButtonProps={{ danger: true }}
           >
             <Button icon={<DeleteOutlined />} size="small" danger>
-              Delete
+              {t('common.delete')}
             </Button>
           </Popconfirm>
         </Space>
@@ -249,9 +157,9 @@ export default function LLMConfigsPage() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2>LLM Configuration Management</h2>
+        <h2>{t('llmConfigs.title')}</h2>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          Create Config
+          {t('llmConfigs.create')}
         </Button>
       </div>
 
@@ -263,97 +171,12 @@ export default function LLMConfigsPage() {
         pagination={{ pageSize: 10 }}
       />
 
-      <Modal
-        title={editing ? 'Edit LLM Configuration' : 'Create LLM Configuration'}
+      <LLMConfigModal
         open={modalOpen}
-        onOk={handleSave}
-        onCancel={() => { setModalOpen(false); setTestResult(null); }}
-        width={680}
-        destroyOnClose
-      >
-        <Form form={form} layout="vertical" initialValues={{ temperature: 0.3, top_p: 1.0, max_tokens: 2048, timeout_ms: 60000, is_default: false }}>
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: 'Name is required' }]}>
-            <Input placeholder="e.g., Production OpenAI Config" />
-          </Form.Item>
-
-          <Form.Item name="provider" label="Provider" rules={[{ required: true, message: 'Provider is required' }]}>
-            <Select
-              placeholder="Select a provider"
-              options={[
-                { value: 'openai_compatible', label: 'OpenAI Compatible' },
-                { value: 'dashscope', label: 'DashScope (Alibaba)' },
-                { value: 'zhipu', label: 'ZhipuAI (GLM)' },
-                { value: 'local', label: 'Local (Ollama)' },
-                { value: 'vllm', label: 'vLLM (MiniMax / DeepSeek / etc.)' },
-              ]}
-            />
-          </Form.Item>
-
-          <Space style={{ marginBottom: 16 }}>
-            <Button icon={<DownloadOutlined />} onClick={handleLoadTemplate}>
-              Load Template
-            </Button>
-            <Button icon={<ExperimentOutlined />} loading={testing} onClick={handleTestConfig}>
-              Test Config
-            </Button>
-          </Space>
-
-          {testResult && (
-            <Card
-              size="small"
-              style={{ marginBottom: 16 }}
-              title={testResult.success ? 'Test Passed' : 'Test Failed'}
-              headStyle={{ background: testResult.success ? '#f6ffed' : '#fff2f0' }}
-            >
-              <Descriptions column={1} size="small">
-                {testResult.success && (
-                  <>
-                    <Descriptions.Item label="Response">{testResult.content}</Descriptions.Item>
-                    <Descriptions.Item label="Latency">{testResult.latency_ms?.toFixed(0)}ms</Descriptions.Item>
-                  </>
-                )}
-                {!testResult.success && (
-                  <Descriptions.Item label="Error">{testResult.error}</Descriptions.Item>
-                )}
-              </Descriptions>
-            </Card>
-          )}
-
-          <Form.Item name="base_url" label="Base URL" rules={[{ required: true, message: 'Base URL is required' }]}>
-            <Input placeholder="https://api.openai.com/v1" />
-          </Form.Item>
-
-          <Form.Item name="api_key" label="API Key">
-            <Input.Password placeholder="sk-... (leave empty for local models)" />
-          </Form.Item>
-
-          <Form.Item name="model" label="Model" rules={[{ required: true, message: 'Model name is required' }]}>
-            <Input placeholder="gpt-4o / qwen2.5 / glm-4" />
-          </Form.Item>
-
-          <Space size="large" wrap>
-            <Form.Item name="temperature" label="Temperature">
-              <InputNumber min={0} max={2} step={0.1} style={{ width: 120 }} />
-            </Form.Item>
-
-            <Form.Item name="top_p" label="Top P">
-              <InputNumber min={0} max={1} step={0.05} style={{ width: 120 }} />
-            </Form.Item>
-
-            <Form.Item name="max_tokens" label="Max Tokens">
-              <InputNumber min={1} max={128000} style={{ width: 140 }} />
-            </Form.Item>
-
-            <Form.Item name="timeout_ms" label="Timeout (ms)">
-              <InputNumber min={1000} max={600000} step={1000} style={{ width: 140 }} />
-            </Form.Item>
-          </Space>
-
-          <Form.Item name="is_default" label="Set as Default" valuePropName="checked">
-            <Switch />
-          </Form.Item>
-        </Form>
-      </Modal>
+        editing={editing}
+        onClose={() => { setModalOpen(false); setEditing(null); }}
+        onSaved={handleModalSaved}
+      />
     </div>
   );
 }

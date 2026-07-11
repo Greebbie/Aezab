@@ -14,6 +14,7 @@ from server.db import get_db
 from server.middleware.auth import get_current_user, get_tenant_id
 from server.models.workflow import Workflow, WorkflowStep
 from server.schemas.workflow import WorkflowCreate, WorkflowUpdate, WorkflowOut, StepCreate, StepOut
+from server.api._usage_check import get_resource_usage
 
 
 async def _load_workflow(
@@ -374,6 +375,21 @@ async def update_workflow(
     await db.commit()
     wf = await _load_workflow(db, wf.id, tenant_id)
     return wf
+
+
+@router.get("/{workflow_id}/usage")
+async def get_workflow_usage(
+    workflow_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    """Report which agents currently depend on this workflow."""
+    wf = await _load_workflow(db, workflow_id, tenant_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    return await get_resource_usage(
+        db, tenant_id,
+        skill_type="workflow",
+        matches=lambda ec: ec.get("workflow_id") == workflow_id,
+    )
 
 
 @router.delete("/{workflow_id}", status_code=204)

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Space, message, Tag, Popconfirm } from 'antd';
+import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Space, message, Tag } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { toolApi } from '../api';
+import { useTranslation } from 'react-i18next';
+import { toolApi, type ResourceUsage } from '../api';
+import { friendlyError } from '../utils/friendlyError';
 
 const { TextArea } = Input;
 
@@ -13,6 +15,7 @@ const BUILTIN_FUNCTIONS = [
 ];
 
 export default function ToolsPage() {
+  const { t } = useTranslation();
   const [tools, setTools] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -81,6 +84,47 @@ export default function ToolsPage() {
     }
   };
 
+  const confirmPlainDelete = (id: string) => {
+    Modal.confirm({
+      title: '确认删除此工具？',
+      okText: '确认',
+      cancelText: '取消',
+      onOk: () => handleDelete(id),
+    });
+  };
+
+  const handleDeleteClick = async (id: string) => {
+    let usage: ResourceUsage | null = null;
+    try {
+      usage = (await toolApi.usage(id)).data;
+    } catch (e: unknown) {
+      message.error(`${t('tools.usageCheckFailed')}: ${friendlyError(e, t)}`);
+      confirmPlainDelete(id);
+      return;
+    }
+
+    if (usage.count > 0) {
+      const names = usage.used_by.slice(0, 5).map((a) => a.agent_name);
+      const more = usage.count > 5 ? t('tools.deleteInUseMore', { count: usage.count - 5 }) : '';
+      Modal.confirm({
+        title: t('tools.deleteInUseTitle', { count: usage.count }),
+        content: (
+          <div>
+            <p>{names.join(', ')}{more}</p>
+            <p>{t('tools.deleteInUseBody')}</p>
+          </div>
+        ),
+        okText: t('tools.deleteAnyway'),
+        okType: 'danger',
+        cancelText: '取消',
+        onOk: () => handleDelete(id),
+      });
+      return;
+    }
+
+    confirmPlainDelete(id);
+  };
+
   const handleTest = async (id: string) => {
     try {
       const res = await toolApi.test({ tool_id: id });
@@ -120,9 +164,7 @@ export default function ToolsPage() {
         <Space>
           <Button icon={<ThunderboltOutlined />} size="small" onClick={() => handleTest(record.id)}>测试</Button>
           <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)}>编辑</Button>
-          <Popconfirm title="确认删除此工具？" onConfirm={() => handleDelete(record.id)} okText="确认" cancelText="取消">
-            <Button icon={<DeleteOutlined />} size="small" danger>删除</Button>
-          </Popconfirm>
+          <Button icon={<DeleteOutlined />} size="small" danger onClick={() => handleDeleteClick(record.id)}>删除</Button>
         </Space>
       ),
     },

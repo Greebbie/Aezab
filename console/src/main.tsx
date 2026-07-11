@@ -7,6 +7,7 @@ import enUS from 'antd/locale/en_US';
 import './i18n';
 import i18n from './i18n';
 import App from './App';
+import AuthGate from './AuthGate';
 import './styles.css';
 
 function Root() {
@@ -58,7 +59,9 @@ function Root() {
       }}
     >
       <BrowserRouter>
-        <App />
+        <AuthGate>
+          <App />
+        </AuthGate>
       </BrowserRouter>
     </ConfigProvider>
   );

@@ -28,7 +28,9 @@ import {
   UploadOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { agentApi, invokeApi, auditApi, asrApi } from '../api';
+import { useTranslation } from 'react-i18next';
+import { agentApi, invokeApi, auditApi, asrApi, getToken, ApiError } from '../api';
+import { friendlyError } from '../utils/friendlyError';
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
@@ -115,6 +117,8 @@ const EVENT_COLORS: Record<string, string> = {
 /* ── Component ────────────────────────────────────────── */
 
 export default function PlaygroundPage() {
+  const { t } = useTranslation();
+
   /* state — agents */
   const [agents, setAgents] = useState<any[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(undefined);
@@ -134,8 +138,9 @@ export default function PlaygroundPage() {
   /* state — workflow form */
   const [workflowFormData, setWorkflowFormData] = useState<Record<string, any>>({});
 
-  /* state — trace panel */
-  const [tracePanelOpen, setTracePanelOpen] = useState(true);
+  /* state — trace panel (default closed: non-technical users only need the
+     conversation; developers can open it via the toggle button) */
+  const [tracePanelOpen, setTracePanelOpen] = useState(false);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [traceLoading, setTraceLoading] = useState(false);
   const [activeCitations, setActiveCitations] = useState<Citation[]>([]);
@@ -247,13 +252,23 @@ export default function PlaygroundPage() {
 
       const response = await fetch('/api/v1/invoke/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        let detail: string | undefined;
+        try {
+          const body = await response.json();
+          detail = body?.detail;
+        } catch {
+          /* non-JSON error body — fall back to statusText below */
+        }
+        throw new ApiError(detail || response.statusText || `HTTP ${response.status}`, response.status, detail);
       }
 
       const reader = response.body?.getReader();
@@ -264,6 +279,7 @@ export default function PlaygroundPage() {
       let currentEvent = '';
       let currentData = '';
       let finalContent = '';
+      let streamedText = '';
       let finalCitations: Citation[] = [];
       let finalFollowups: string[] = [];
       let finalTraceId: string | undefined;
@@ -292,8 +308,34 @@ export default function PlaygroundPage() {
             try {
               const parsed = JSON.parse(currentData);
 
-              if (currentEvent === 'answer') {
+              if (currentEvent === 'answer_delta') {
+                /* Render tokens live as they stream in. */
+                streamedText += parsed.text || '';
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last && last.isStreaming) {
+                    updated[updated.length - 1] = { ...last, content: streamedText };
+                  }
+                  return updated;
+                });
+              } else if (currentEvent === 'answer_reset') {
+                /* Discard whatever was streamed so far this turn — it was
+                   either a tool-call round's throwaway pre-tool content, or
+                   the stream failed mid-way and a fallback answer is coming. */
+                streamedText = '';
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last && last.isStreaming) {
+                    updated[updated.length - 1] = { ...last, content: '' };
+                  }
+                  return updated;
+                });
+              } else if (currentEvent === 'answer') {
+                /* The final answer always REPLACES any streamed text. */
                 finalContent = parsed.content || '';
+                streamedText = finalContent;
                 setMessages((prev) => {
                   const updated = [...prev];
                   const last = updated[updated.length - 1];
@@ -303,12 +345,13 @@ export default function PlaygroundPage() {
                   return updated;
                 });
               } else if (currentEvent === 'status') {
-                /* Update streaming message with status */
+                /* Update streaming message with status, but never clobber
+                   text that has already started streaming in. */
                 const stage = parsed.stage || 'processing';
                 setMessages((prev) => {
                   const updated = [...prev];
                   const last = updated[updated.length - 1];
-                  if (last && last.isStreaming && !last.content) {
+                  if (last && last.isStreaming && !last.content && !streamedText) {
                     const stageLabel =
                       stage === 'retrieval' ? 'Retrieving knowledge...' : 'Processing...';
                     updated[updated.length - 1] = { ...last, content: stageLabel };
@@ -325,7 +368,10 @@ export default function PlaygroundPage() {
                 finalSkillInfo = parsed.skill_info || undefined;
                 if (parsed.session_id) setSessionId(parsed.session_id);
               } else if (currentEvent === 'error') {
-                const errorMsg = parsed.error_msg || parsed.detail || 'Unknown error';
+                const errorType = parsed.error_type as string | undefined;
+                const isLlmError = errorType === 'llm_error' || errorType === 'rate_limit' || errorType === 'timeout';
+                const rawMsg: string = parsed.error_msg || parsed.detail || 'Unknown error';
+                const errorMsg = isLlmError ? `${rawMsg} ${t('playground.checkLlmConfigHint')}` : rawMsg;
                 setMessages((prev) => {
                   const updated = [...prev];
                   const last = updated[updated.length - 1];
@@ -378,7 +424,7 @@ export default function PlaygroundPage() {
       if (finalTraceId) loadTrace(finalTraceId);
     } catch (err: any) {
       if (err.name === 'AbortError') return;
-      const errorText = err.message || 'Streaming request failed';
+      const errorText = friendlyError(err, t);
       message.error(errorText);
       setMessages((prev) => {
         const updated = [...prev];
@@ -432,8 +478,7 @@ export default function PlaygroundPage() {
       if (data.citations?.length > 0) setActiveCitations(data.citations);
       if (data.trace_id) loadTrace(data.trace_id);
     } catch (err: any) {
-      const errorText =
-        err.response?.data?.detail || err.message || 'Request failed';
+      const errorText = friendlyError(err, t);
       message.error(errorText);
       setMessages((prev) => [
         ...prev,

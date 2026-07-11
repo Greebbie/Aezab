@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Space, message, Tag, List, Popconfirm, Divider, Card } from 'antd';
 import { PlusOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined } from '@ant-design/icons';
-import { workflowApi, toolApi } from '../api';
+import { useTranslation } from 'react-i18next';
+import { workflowApi, toolApi, type ResourceUsage } from '../api';
+import { friendlyError } from '../utils/friendlyError';
 
 const { TextArea } = Input;
 
@@ -32,6 +34,7 @@ const FIELD_TYPES = [
 ];
 
 export default function WorkflowsPage() {
+  const { t } = useTranslation();
   const [workflows, setWorkflows] = useState<any[]>([]);
   const [tools, setTools] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -61,7 +64,7 @@ export default function WorkflowsPage() {
 
   useEffect(() => { load(); }, []);
 
-  const toolOptions = tools.map(t => ({ value: t.id, label: `${t.name} (${t.category})` }));
+  const toolOptions = tools.map((tool) => ({ value: tool.id, label: `${tool.name} (${tool.category})` }));
 
   const handleCreateWf = async () => {
     try {
@@ -85,6 +88,47 @@ export default function WorkflowsPage() {
     } catch (e: any) {
       message.error('删除失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
     }
+  };
+
+  const confirmPlainDeleteWf = (id: string) => {
+    Modal.confirm({
+      title: '确认删除此工作流及其所有步骤？',
+      okText: '确认',
+      cancelText: '取消',
+      onOk: () => handleDeleteWf(id),
+    });
+  };
+
+  const handleDeleteWfClick = async (id: string) => {
+    let usage: ResourceUsage | null = null;
+    try {
+      usage = (await workflowApi.usage(id)).data;
+    } catch (e: unknown) {
+      message.error(`${t('workflows.usageCheckFailed')}: ${friendlyError(e, t)}`);
+      confirmPlainDeleteWf(id);
+      return;
+    }
+
+    if (usage.count > 0) {
+      const names = usage.used_by.slice(0, 5).map((a) => a.agent_name);
+      const more = usage.count > 5 ? t('workflows.deleteInUseMore', { count: usage.count - 5 }) : '';
+      Modal.confirm({
+        title: t('workflows.deleteInUseTitle', { count: usage.count }),
+        content: (
+          <div>
+            <p>{names.join(', ')}{more}</p>
+            <p>{t('workflows.deleteInUseBody')}</p>
+          </div>
+        ),
+        okText: t('workflows.deleteAnyway'),
+        okType: 'danger',
+        cancelText: '取消',
+        onOk: () => handleDeleteWf(id),
+      });
+      return;
+    }
+
+    confirmPlainDeleteWf(id);
   };
 
   const openEditStep = (wf: any, step: any) => {
@@ -185,9 +229,7 @@ export default function WorkflowsPage() {
           <Button icon={<PlusOutlined />} size="small" onClick={() => { setSelectedWf(record); setEditingStep(null); stepForm.resetFields(); setStepModalOpen(true); }}>
             添加步骤
           </Button>
-          <Popconfirm title="确认删除此工作流及其所有步骤？" onConfirm={() => handleDeleteWf(record.id)} okText="确认" cancelText="取消">
-            <Button icon={<DeleteOutlined />} size="small" danger>删除</Button>
-          </Popconfirm>
+          <Button icon={<DeleteOutlined />} size="small" danger onClick={() => handleDeleteWfClick(record.id)}>删除</Button>
         </Space>
       ),
     },

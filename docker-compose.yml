@@ -15,13 +15,28 @@ services:
       - aezab-model-cache:/root/.cache/huggingface
     depends_on:
       - redis
+      - ollama
     restart: unless-stopped
+    # Cap the container's json-file log on disk: unbounded logs are a
+    # common cause of an unattended self-hosted install filling its disk
+    # and taking the whole site down.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
     restart: unless-stopped
+    # Cap the container's json-file log on disk (see `server` service comment).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Local LLM via Ollama (CPU)
   ollama:
@@ -31,6 +46,33 @@ services:
     volumes:
       - ollama-models:/root/.ollama
     restart: unless-stopped
+    # Cap the container's json-file log on disk (see `server` service comment).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # One-shot: pulls a small local model so the console has something to talk
+  # to out of the box, with zero manual setup. Runs once and exits (restart:
+  # "no"). If you plan to use a cloud LLM instead (recommended — configure
+  # it from the console's first-run setup wizard), you can delete both the
+  # `ollama` and `ollama-init` services entirely.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: >
+      sh -c "
+        until ollama list >/dev/null 2>&1; do
+          echo 'Waiting for ollama to be ready...';
+          sleep 2;
+        done;
+        ollama pull qwen2.5:1.5b
+      "
+    restart: "no"
 
   # Optional: vLLM for GPU inference
   # Uncomment below and comment out ollama if you have NVIDIA GPU.

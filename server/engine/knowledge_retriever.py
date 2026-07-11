@@ -22,6 +22,7 @@ from sqlalchemy import select, or_, func, literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.config import settings
+from server.engine.vector_rebuild import maybe_auto_rebuild
 from server.models.knowledge import KnowledgeChunk, KnowledgeSource
 from server.schemas.knowledge import RetrievalHit, RetrievalResponse
 
@@ -484,6 +485,13 @@ class KnowledgeRetriever:
         4. Optional cross-encoder reranking (if reranker_enabled in config)
         5. Fast hits + fused hits merged, deduplicated by chunk_id
         """
+        # Fire-and-forget: if vector_store.py flagged a FAISS dimension
+        # mismatch (e.g. an embedding model swap), this schedules a
+        # background reindex from knowledge_chunks. No-op in the common case
+        # (single lock-guarded bool read); never awaits the rebuild itself,
+        # so it doesn't count against retrieval_timeout_ms below.
+        await maybe_auto_rebuild()
+
         # Read runtime config
         cfg_top_k = self._cfg.get("retrieval_top_k", top_k)
         top_k = min(top_k, cfg_top_k) if cfg_top_k else top_k

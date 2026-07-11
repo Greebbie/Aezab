@@ -20,6 +20,7 @@ from server.schemas.knowledge import (
 )
 from server.engine.knowledge_retriever import KnowledgeRetriever
 from server.middleware.auth import get_current_user, get_tenant_id
+from server.api._usage_check import get_resource_usage
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,19 @@ async def list_chunks(
         }
         for c in chunks
     ]
+
+
+@router.get("/sources/{source_id}/usage")
+async def get_source_usage(
+    source_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    """Report which agents currently depend on this knowledge source."""
+    await _get_owned_source(db, source_id, tenant_id)
+    return await get_resource_usage(
+        db, tenant_id,
+        skill_type="knowledge_qa",
+        matches=lambda ec: source_id in (ec.get("knowledge_source_ids") or []),
+    )
 
 
 @router.delete("/sources/{source_id}", status_code=204)

@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Alert, Button, Card, Col, Descriptions, Row, Space, Spin, Tabs, Typography } from 'antd';
-import { ApiOutlined, AudioOutlined, AuditOutlined, LinkOutlined, ReloadOutlined, SendOutlined } from '@ant-design/icons';
+import { ApiOutlined, AudioOutlined, AuditOutlined, BellOutlined, LinkOutlined, ReloadOutlined, SendOutlined } from '@ant-design/icons';
 import { HelpLabel, PageHeader } from '../components/shared';
 import { getIntegrationCopy } from './integrations/copy';
+import EventSubscriptionsTab from './integrations/EventSubscriptionsTab';
 import InboundApiTab from './integrations/InboundApiTab';
 import OutboundToolsTab from './integrations/OutboundToolsTab';
 import TraceDebugTab from './integrations/TraceDebugTab';
@@ -20,7 +21,7 @@ function getApiBase() {
 
 export default function IntegrationsPage() {
   const navigate = useNavigate();
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isZh = i18n.language?.startsWith('zh');
   const copy = useMemo(() => getIntegrationCopy(isZh), [isZh]);
   const apiBase = useMemo(() => getApiBase(), []);
@@ -69,6 +70,14 @@ export default function IntegrationsPage() {
       title: copy.tabs.webhooks,
       metric: `${webhookWorkflows.length} webhook workflows`,
       help: copy.categoryHelp.webhooks,
+    },
+    {
+      key: 'subscriptions',
+      tabKey: 'subscriptions',
+      icon: <BellOutlined style={{ fontSize: 22, color: '#eb2f96' }} />,
+      title: t('eventSubscriptions.tab'),
+      metric: 'HMAC-signed event callbacks',
+      help: { summary: t('eventSubscriptions.title'), howTo: t('eventSubscriptions.verificationHint') },
     },
   ];
 
@@ -202,6 +211,11 @@ export default function IntegrationsPage() {
             key: 'webhooks',
             label: copy.tabs.webhooks,
             children: <WorkflowWebhooksTab workflows={workflows} copy={copy} onChanged={reload} />,
+          },
+          {
+            key: 'subscriptions',
+            label: t('eventSubscriptions.tab'),
+            children: <EventSubscriptionsTab />,
           },
           {
             key: 'traces',

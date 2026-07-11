@@ -7,15 +7,21 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import get_db
+from server.engine.secrets_store import encrypt_secret
 from server.middleware.auth import get_current_user, get_tenant_id
 from server.models.llm_config import LLMConfig
 
 logger = logging.getLogger(__name__)
+
+# Placeholder the API returns in place of a real key (see LLMConfigOut.api_key
+# below) and that the frontend echoes back unchanged when the user didn't
+# touch the key field. `update_config` treats this sentinel as "no change".
+_MASKED_API_KEY = "********"
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -69,6 +75,15 @@ class LLMConfigOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _mask_api_key(cls, v: str) -> str:
+        """Never echo the stored key (plaintext or ciphertext) back to the
+        client -- a non-empty key becomes a fixed placeholder, an unset key
+        stays empty. The frontend treats an unchanged placeholder as "leave
+        the key alone" (see `update_config` below)."""
+        return _MASKED_API_KEY if v else ""
 
 
 class LLMConfigTestRequest(BaseModel):
@@ -137,10 +152,10 @@ PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "minimax": {
         "provider": "openai_compatible",
-        "base_url": "https://api.minimax.chat/v1",
-        "model": "MiniMax-M2.7",
-        "temperature": 1.0,
-        "top_p": 0.95,
+        "base_url": "https://api.minimaxi.com/v1",
+        "model": "MiniMax-M2",
+        "temperature": 0.3,
+        "top_p": 1.0,
         "max_tokens": 2048,
         "timeout_ms": 60000,
     },
@@ -171,7 +186,7 @@ async def create_config(
         name=body.name,
         provider=body.provider,
         base_url=body.base_url,
-        api_key=body.api_key,
+        api_key=encrypt_secret(body.api_key),
         model=body.model,
         temperature=body.temperature,
         top_p=body.top_p,
@@ -226,6 +241,17 @@ async def update_config(
         raise HTTPException(404, "LLM config not found")
 
     update_data = body.model_dump(exclude_unset=True)
+
+    # The frontend receives the masked placeholder in list/get responses and
+    # echoes it back unchanged when the user didn't edit the key field --
+    # treat that as "no change" rather than overwriting the real key with
+    # the literal placeholder string. A genuinely new (or explicitly
+    # cleared, i.e. "") key gets encrypted before it touches the DB.
+    if "api_key" in update_data:
+        if update_data["api_key"] == _MASKED_API_KEY:
+            del update_data["api_key"]
+        else:
+            update_data["api_key"] = encrypt_secret(update_data["api_key"])
 
     # If setting this config as default, unset others first
     if update_data.get("is_default"):

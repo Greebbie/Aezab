@@ -48,12 +48,10 @@ except ImportError:
     logger.warning("PyJWT not installed — JWT auth will be unavailable")
 
 try:
-    from passlib.context import CryptContext
-
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    import bcrypt
 except ImportError:
-    pwd_context = None  # type: ignore[assignment]
-    logger.warning("passlib not installed — password hashing will be unavailable")
+    bcrypt = None  # type: ignore[assignment]
+    logger.warning("bcrypt not installed — password hashing will be unavailable")
 
 # ── Mock user for development mode ──────────────────────────────
 
@@ -67,20 +65,59 @@ _MOCK_USER: dict[str, Any] = {
 
 
 # ── Password utilities ──────────────────────────────────────────
+#
+# Hashing is done with the `bcrypt` library directly (not passlib).
+# passlib 1.7.4 (last released 2020, unmaintained) probes the bcrypt
+# backend version via `bcrypt.__about__.__version__`, an attribute that
+# was removed in bcrypt>=4.1. On any fresh install (`pip install
+# passlib[bcrypt]`) that pulls modern bcrypt, passlib's version probe
+# raises and `hash_password()`/`verify_password()` blow up with
+# "password cannot be longer than 72 bytes" — a 500 on the very first
+# POST /auth/register during setup. Calling `bcrypt.hashpw`/`checkpw`
+# directly sidesteps passlib's broken detection entirely.
+#
+# Compatibility: bcrypt.checkpw() understands the standard `$2b$` hash
+# format that passlib's CryptContext(schemes=["bcrypt"]) has always
+# produced, so password hashes created by the old passlib-based code
+# remain valid — no re-hash or migration needed for existing users.
+
+_BCRYPT_MAX_PASSWORD_BYTES = 72
 
 
 def hash_password(password: str) -> str:
-    """Hash a plaintext password using bcrypt."""
-    if pwd_context is None:
-        raise RuntimeError("passlib is not installed — run: pip install passlib[bcrypt]")
-    return pwd_context.hash(password)
+    """Hash a plaintext password using bcrypt.
+
+    Raises ValueError if the UTF-8 encoded password exceeds bcrypt's
+    72-byte limit, instead of silently truncating it.
+    """
+    if bcrypt is None:
+        raise RuntimeError("bcrypt is not installed — run: pip install bcrypt")
+
+    password_bytes = password.encode("utf-8")
+    if len(password_bytes) > _BCRYPT_MAX_PASSWORD_BYTES:
+        raise ValueError(
+            f"Password is too long: {len(password_bytes)} bytes "
+            f"(max {_BCRYPT_MAX_PASSWORD_BYTES} bytes when UTF-8 encoded)."
+        )
+
+    hashed = bcrypt.hashpw(password_bytes, bcrypt.gensalt())
+    return hashed.decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a plaintext password against a bcrypt hash."""
-    if pwd_context is None:
-        raise RuntimeError("passlib is not installed — run: pip install passlib[bcrypt]")
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a plaintext password against a bcrypt hash.
+
+    Returns False (rather than raising) for malformed/unrecognized
+    hashes, so a corrupted or foreign hash format never surfaces as a
+    500 to the caller.
+    """
+    if bcrypt is None:
+        raise RuntimeError("bcrypt is not installed — run: pip install bcrypt")
+
+    try:
+        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 
 # ── API key utilities ───────────────────────────────────────────

@@ -1,11 +1,22 @@
-import { useEffect, useState } from 'react';
-import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Card, List, Upload, InputNumber, Popconfirm, Alert } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { Table, Button, Modal, Form, Input, Select, Space, message, Tag, Card, List, Upload, InputNumber, Alert, Spin } from 'antd';
 import { PlusOutlined, DeleteOutlined, SearchOutlined, UploadOutlined, EyeOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { knowledgeApi } from '../api';
+import { knowledgeApi, vectorAdminApi, type ResourceUsage } from '../api';
 import { HelpLabel, HelpTooltip, PageHeader } from '../components/shared';
+import { friendlyError } from '../utils/friendlyError';
 
 const { TextArea } = Input;
+
+type EmbeddingModelStatus = 'ready' | 'not_downloaded' | 'downloading' | 'error';
+
+interface ModelStatusResponse {
+  status: EmbeddingModelStatus;
+  configured_model: string;
+  message?: string | null;
+}
+
+const MODEL_STATUS_POLL_MS = 5000;
 
 export default function KnowledgePage() {
   const { t } = useTranslation();
@@ -22,6 +33,9 @@ export default function KnowledgePage() {
   const [chunks, setChunks] = useState<any[]>([]);
   const [chunkLoading, setChunkLoading] = useState(false);
   const [chunkSourceName, setChunkSourceName] = useState('');
+  const [modelStatus, setModelStatus] = useState<ModelStatusResponse | null>(null);
+  const [modelDownloadStarting, setModelDownloadStarting] = useState(false);
+  const modelStatusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [sourceForm] = Form.useForm();
   const [kvForm] = Form.useForm();
   const [faqForm] = Form.useForm();
@@ -40,9 +54,61 @@ export default function KnowledgePage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  const stopModelStatusPolling = () => {
+    if (modelStatusPollRef.current) {
+      clearInterval(modelStatusPollRef.current);
+      modelStatusPollRef.current = null;
+    }
+  };
 
-  const errorDetail = (e: any) => e.response?.data?.detail || e.message || t('common.unknown');
+  // Non-fatal by design: this is a passive status banner, not a user-triggered
+  // action, so a transient network hiccup just leaves the banner absent
+  // rather than surfacing a toast on every 5s poll.
+  const loadModelStatus = async (): Promise<ModelStatusResponse | null> => {
+    try {
+      const res = await vectorAdminApi.getModelStatus();
+      const data = res.data as ModelStatusResponse;
+      setModelStatus(data);
+      return data;
+    } catch {
+      return null;
+    }
+  };
+
+  const startModelStatusPolling = () => {
+    if (modelStatusPollRef.current) return;
+    modelStatusPollRef.current = setInterval(async () => {
+      const data = await loadModelStatus();
+      if (data && data.status !== 'downloading') {
+        stopModelStatusPolling();
+      }
+    }, MODEL_STATUS_POLL_MS);
+  };
+
+  const handleDownloadModel = async () => {
+    setModelDownloadStarting(true);
+    try {
+      await vectorAdminApi.warmup();
+      await loadModelStatus();
+      startModelStatusPolling();
+    } catch (e: any) {
+      message.error(`${t('knowledge.modelStatus.downloadButton')}: ${errorDetail(e)}`);
+    } finally {
+      setModelDownloadStarting(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    loadModelStatus().then((data) => {
+      if (data && data.status === 'downloading') {
+        startModelStatusPolling();
+      }
+    });
+    return () => stopModelStatusPolling();
+  }, []);
+
+  const errorDetail = (e: unknown) => friendlyError(e, t);
   const sourceOptions = sources.map(s => ({
     value: s.id,
     label: `${s.name} (${t(`knowledge.sourceTypes.${s.source_type}`, { defaultValue: s.source_type })})`,
@@ -159,6 +225,47 @@ export default function KnowledgePage() {
     }
   };
 
+  const confirmPlainDelete = (id: string) => {
+    Modal.confirm({
+      title: t('knowledge.deleteConfirm'),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      onOk: () => handleDeleteSource(id),
+    });
+  };
+
+  const handleDeleteClick = async (id: string) => {
+    let usage: ResourceUsage | null = null;
+    try {
+      usage = (await knowledgeApi.usage(id)).data;
+    } catch (e: any) {
+      message.error(`${t('knowledge.usageCheckFailed')}: ${errorDetail(e)}`);
+      confirmPlainDelete(id);
+      return;
+    }
+
+    if (usage.count > 0) {
+      const names = usage.used_by.slice(0, 5).map((a) => a.agent_name);
+      const more = usage.count > 5 ? t('knowledge.deleteInUseMore', { count: usage.count - 5 }) : '';
+      Modal.confirm({
+        title: t('knowledge.deleteInUseTitle', { count: usage.count }),
+        content: (
+          <div>
+            <p>{names.join(', ')}{more}</p>
+            <p>{t('knowledge.deleteInUseBody')}</p>
+          </div>
+        ),
+        okText: t('knowledge.deleteAnyway'),
+        okType: 'danger',
+        cancelText: t('common.cancel'),
+        onOk: () => handleDeleteSource(id),
+      });
+      return;
+    }
+
+    confirmPlainDelete(id);
+  };
+
   const columns = [
     {
       title: t('common.name'), dataIndex: 'name', key: 'name',
@@ -180,9 +287,7 @@ export default function KnowledgePage() {
       title: t('common.actions'), key: 'actions', render: (_: any, record: any) => (
         <Space>
           <Button icon={<EyeOutlined />} size="small" onClick={() => handleViewChunks(record.id, record.name)}>{t('knowledge.viewChunks')}</Button>
-          <Popconfirm title={t('knowledge.deleteConfirm')} onConfirm={() => handleDeleteSource(record.id)} okText={t('common.confirm')} cancelText={t('common.cancel')}>
-            <Button icon={<DeleteOutlined />} size="small" danger>{t('common.delete')}</Button>
-          </Popconfirm>
+          <Button icon={<DeleteOutlined />} size="small" danger onClick={() => handleDeleteClick(record.id)}>{t('common.delete')}</Button>
         </Space>
       ),
     },
@@ -193,6 +298,44 @@ export default function KnowledgePage() {
 
   return (
     <div>
+      {modelStatus?.status === 'not_downloaded' && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('knowledge.modelStatus.notDownloadedTitle')}
+          description={t('knowledge.modelStatus.notDownloadedDesc', { model: modelStatus.configured_model })}
+          action={
+            <Button size="small" loading={modelDownloadStarting} onClick={handleDownloadModel}>
+              {t('knowledge.modelStatus.downloadButton')}
+            </Button>
+          }
+        />
+      )}
+      {modelStatus?.status === 'downloading' && (
+        <Alert
+          type="info"
+          showIcon
+          icon={<Spin size="small" />}
+          style={{ marginBottom: 16 }}
+          message={t('knowledge.modelStatus.downloadingTitle')}
+          description={t('knowledge.modelStatus.downloadingDesc')}
+        />
+      )}
+      {modelStatus?.status === 'error' && (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('knowledge.modelStatus.errorTitle')}
+          description={modelStatus.message || t('knowledge.modelStatus.errorTitle')}
+          action={
+            <Button size="small" loading={modelDownloadStarting} onClick={handleDownloadModel}>
+              {t('knowledge.modelStatus.retryButton')}
+            </Button>
+          }
+        />
+      )}
       <PageHeader
         eyebrow={t('knowledge.eyebrow')}
         title={t('knowledge.title')}
@@ -295,6 +438,14 @@ export default function KnowledgePage() {
           message={t('knowledge.uploadStandard')}
           description={t('knowledge.uploadStandardDesc')}
         />
+        {modelStatus && modelStatus.status !== 'ready' && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={t('knowledge.modelStatus.uploadWarning')}
+          />
+        )}
         <Form form={uploadForm} layout="vertical">
           <Form.Item name="source_id" label={<HelpLabel label={t('knowledge.sources')} help={t('knowledge.help.source')} />}>
             <Select

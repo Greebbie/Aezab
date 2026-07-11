@@ -15,11 +15,9 @@ WORKDIR /app
 ARG AEZAB_TORCH_INSTALL=
 ARG AEZAB_TORCH_CPU_VERSION=
 ARG AEZAB_TORCH_CPU_INDEX_URL=
-ARG AEZAB_PRELOAD_EMBEDDING_MODEL=
 ARG HLAB_TORCH_INSTALL=
 ARG HLAB_TORCH_CPU_VERSION=
 ARG HLAB_TORCH_CPU_INDEX_URL=
-ARG HLAB_PRELOAD_EMBEDDING_MODEL=
 
 ENV HF_ENDPOINT=https://hf-mirror.com
 
@@ -45,12 +43,12 @@ RUN TORCH_INSTALL="${AEZAB_TORCH_INSTALL:-${HLAB_TORCH_INSTALL:-auto}}"; \
     fi
 RUN pip install --no-cache-dir -e ".[rag]"
 
-# Best-effort embedding warmup. Runtime also exposes /api/v1/vector-admin/warmup,
-# so a temporary mirror/network issue must not make the image impossible to build.
-RUN PRELOAD_MODEL="${AEZAB_PRELOAD_EMBEDDING_MODEL:-${HLAB_PRELOAD_EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}}"; \
-    export PRELOAD_MODEL; \
-    python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['PRELOAD_MODEL'])" \
-    || echo "WARNING: embedding model preload failed; use Settings > Embedding Model > Warm Up after deployment"
+# The embedding model is NOT pre-downloaded at build time (it used to warm
+# the wrong default here and still left the real model, BAAI/bge-m3, to
+# download silently on first upload). Instead, the console's Knowledge page
+# shows the model's download status and lets the user trigger it explicitly
+# via POST /api/v1/vector-admin/warmup, which downloads/loads it in the
+# background.
 
 COPY server/ server/
 COPY --from=frontend /app/console/dist /app/static

@@ -321,9 +321,19 @@ class VectorStoreManager(VectorStoreAdapter):
                     logger.warning(
                         f"FAISS index dimension ({loaded_index.d}) != "
                         f"embedding dimension ({self._embedding.dimension}). "
-                        f"Creating new HNSW index. Run /vector-admin/rebuild to re-index."
+                        f"Creating new empty HNSW index; an automatic background "
+                        f"rebuild from knowledge_chunks will kick in on the next "
+                        f"retrieval (or run /vector-admin/rebuild manually)."
                     )
                     self._create_hnsw_index()
+                    # Local import: vector_rebuild imports get_vector_store from
+                    # this module at call time, so importing it at module level
+                    # here would create a circular import. This only flips a
+                    # flag (see vector_rebuild.mark_dimension_mismatch), so it's
+                    # safe to call from this sync, possibly non-event-loop
+                    # singleton-construction path.
+                    from server.engine.vector_rebuild import mark_dimension_mismatch
+                    mark_dimension_mismatch()
                     return
 
                 # Detect index type

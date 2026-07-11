@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>HlAB Widget 演示</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    max-width: 720px;
+    margin: 48px auto;
+    padding: 0 24px;
+    line-height: 1.6;
+    color: #1f1f1f;
+  }
+  code, pre {
+    background: #f5f6f8;
+    border-radius: 6px;
+    padding: 2px 6px;
+    font-size: 13px;
+  }
+  pre {
+    padding: 14px;
+    overflow-x: auto;
+  }
+  h1 { font-size: 22px; }
+  h2 { font-size: 16px; margin-top: 32px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 10px; border: 1px solid #e5e6eb; font-size: 13px; }
+  th { background: #f5f6f8; }
+</style>
+</head>
+<body>
+
+<h1>HlAB 嵌入式 Widget 演示</h1>
+
+<p>
+  这是一个静态演示页面，展示如何在任意网站中嵌入 HlAB 的对话 Widget。
+  页面右下角应出现一个悬浮气泡按钮——点击即可打开对话面板。
+</p>
+
+<!--
+  使用说明（中文）：
+
+  1. 把下面的 <script> 标签复制到你自己网站的任意 HTML 页面中（放在
+     </body> 之前即可，不需要额外引入任何 CSS/JS 依赖）。
+  2. data-agent-id：要对接的 Agent id（在控制台 Agent 管理页可以看到）。
+  3. data-api-key：一个仅带 "invoke" 作用域的 API Key（不要使用
+     "manage" 作用域的 Key——它会被写进页面源码，任何访问者都能看到）。
+     创建方式见 docs/integration.md 第 1 节。
+  4. data-host：可选，Widget 请求的后端地址，缺省时使用当前 <script>
+     标签自身的 origin（也就是本例中托管 widget.js 的那个 HlAB 服务）。
+  5. data-title / data-color / data-position：可选的外观定制项。
+  6. 生产环境务必：把 AEZAB_CORS_ORIGINS 设置为你的站点域名（而不是
+     "*"），否则任何盗用了这个 API Key 的第三方网站也能调用你的 Agent。
+     详见 docs/deployment.md 第 4 节「Widget 部署」。
+
+  This demo intentionally ships a placeholder agent id / api key below —
+  replace them with real values from your own HlAB deployment before use.
+-->
+
+<h2>嵌入代码</h2>
+<pre><code>&lt;script src="/widget.js"
+        data-agent-id="agent_demo_123"
+        data-api-key="ak_invoke_replace_me"
+        data-title="在线客服"
+        data-color="#1677ff"
+        data-position="right"&gt;&lt;/script&gt;</code></pre>
+
+<h2>可配置属性</h2>
+<table>
+  <thead>
+    <tr><th>属性</th><th>是否必填</th><th>说明</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>data-agent-id</code></td><td>必填</td><td>目标 Agent id</td></tr>
+    <tr><td><code>data-api-key</code></td><td>必填</td><td>仅 <code>invoke</code> 作用域的 API Key</td></tr>
+    <tr><td><code>data-host</code></td><td>可选</td><td>后端地址，缺省取脚本自身 origin</td></tr>
+    <tr><td><code>data-title</code></td><td>可选</td><td>面板标题，默认「AI 助手」</td></tr>
+    <tr><td><code>data-color</code></td><td>可选</td><td>主题色，默认 <code>#1677ff</code></td></tr>
+    <tr><td><code>data-position</code></td><td>可选</td><td><code>right</code>（默认）或 <code>left</code></td></tr>
+    <tr><td><code>data-user-id</code></td><td>可选</td><td>透传的终端用户 id</td></tr>
+  </tbody>
+</table>
+
+<h2>本页实际加载的 Widget</h2>
+<p>
+  下面这行 <code>&lt;script&gt;</code> 使用相对路径 <code>/widget.js</code>，
+  假设本演示页面本身就是由同一个 HlAB 服务（<code>server/main.py</code> 的
+  静态文件挂载）提供的。如果你把这个文件拷贝到别的域名下打开，请把
+  <code>src</code> 换成完整的 HlAB 服务地址，例如
+  <code>https://your-hlab-host/widget.js</code>。
+</p>
+
+<script src="/widget.js"
+        data-agent-id="agent_demo_123"
+        data-api-key="ak_invoke_replace_me"
+        data-title="在线客服"
+        data-color="#1677ff"
+        data-position="right"></script>
+
+</body>
+</html>

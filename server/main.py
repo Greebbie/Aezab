@@ -19,10 +19,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from server.api.agent_capabilities import router as agent_capabilities_router
 from server.api.agent_connections import router as agent_connections_router
 from server.api.agent_skills import router as agent_skills_router
+from server.api.agent_templates import router as agent_templates_router
 from server.api.agents import router as agents_router
 from server.api.asr import router as asr_router
 from server.api.audit import router as audit_router
 from server.api.auth import router as auth_router
+from server.api.backup import router as backup_router
 from server.api.files import router as files_router
 from server.api.invoke import router as invoke_router
 from server.api.knowledge import router as knowledge_router
@@ -31,6 +33,7 @@ from server.api.mock_tools import router as mock_tools_router
 from server.api.performance import router as performance_router
 from server.api.sessions import router as sessions_router
 from server.api.skills import router as skills_router
+from server.api.subscriptions import router as subscriptions_router
 from server.api.tools import router as tools_router
 from server.api.vector_admin import router as vector_admin_router
 from server.api.workflows import router as workflows_router
@@ -51,8 +54,14 @@ if not STATIC_DIR.is_dir():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from server.db import engine, Base
+    import asyncio
+    import contextlib
+
+    from server.db import engine
     import server.models  # noqa: F401 – register all models
+    from server.db_migrate import ensure_schema
+    from server.engine.backup import backup_scheduler_loop
+    from server.engine.retention import retention_scheduler_loop
 
     # Initialize default runtime config (balanced preset)
     from server.runtime_config import runtime_config
@@ -67,18 +76,29 @@ async def lifespan(app: FastAPI):
     except ImportError:
         pass
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # Safe migration: add llm_config_id column for existing databases
-        from sqlalchemy import text
-        try:
-            await conn.execute(text(
-                "ALTER TABLE agents ADD COLUMN llm_config_id VARCHAR(36) REFERENCES llm_configs(id) ON DELETE SET NULL"
-            ))
-            logger.info("Migration: added llm_config_id column to agents table")
-        except Exception:
-            pass  # Column already exists — expected on subsequent startups
+    # Schema bootstrap/migration — see server/db_migrate.py and
+    # docs/migrations.md. Replaces the old bare create_all() + hand-rolled
+    # ALTER TABLE workaround with real Alembic-managed migrations.
+    await ensure_schema()
+
+    # Zero-config automatic backups (server/engine/backup.py). Cancelled on
+    # shutdown below; backup_scheduler_loop() itself returns immediately
+    # without looping when backup_interval_hours <= 0 (disabled).
+    backup_task = asyncio.create_task(backup_scheduler_loop())
+
+    # Audit trace retention (server/engine/retention.py). Cancelled on
+    # shutdown below; retention_scheduler_loop() itself returns immediately
+    # without looping when audit_retention_days <= 0 (disabled).
+    retention_task = asyncio.create_task(retention_scheduler_loop())
+
     yield
+
+    backup_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await backup_task
+    retention_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await retention_task
     await engine.dispose()
 
 
@@ -147,14 +167,26 @@ app.include_router(skills_router, prefix=prefix + "/skills", tags=["skills"], de
 app.include_router(agent_skills_router, prefix=prefix + "/agents", tags=["agent-skills"], dependencies=_manage_deps)
 app.include_router(agent_connections_router, prefix=prefix + "/agent-connections", tags=["agent-connections"], dependencies=_manage_deps)
 app.include_router(agent_capabilities_router, prefix=prefix + "/agents", tags=["agent-capabilities"], dependencies=_manage_deps)
+app.include_router(agent_templates_router, prefix=prefix + "/agent-templates", tags=["agent-templates"], dependencies=_manage_deps)
 app.include_router(auth_router, prefix=prefix + "/auth", tags=["auth"])
 app.include_router(sessions_router, prefix=prefix + "/sessions", tags=["sessions"])
 app.include_router(files_router, prefix=prefix + "/files", tags=["files"])
+app.include_router(subscriptions_router, prefix=prefix + "/subscriptions", tags=["subscriptions"], dependencies=_manage_deps)
+# backup_router carries its own require_role("admin") dependency (see
+# server/api/backup.py) — no _manage_deps needed here.
+app.include_router(backup_router, prefix=prefix + "/backups", tags=["backups"])
 
 
 @app.get("/health")
-async def health():
-    """System health check with component status."""
+async def health(check_llm: bool = False, force: bool = False):
+    """System health check with component status.
+
+    `check_llm` is opt-in and defaults to False: `/health` is polled
+    frequently by monitoring systems, and an LLM reachability check costs a
+    real (billed) request, so it never runs unless a caller explicitly asks
+    for it (e.g. the console's Health page). `force` bypasses the 60s cache
+    in server.engine.llm_health — see that module's docstring.
+    """
     status = {"status": "ok", "version": "0.1.0", "components": {}}
 
     # Check database
@@ -210,6 +242,22 @@ async def health():
         }
     except Exception:
         pass
+
+    # LLM reachability — opt-in only (see docstring above). Never lets a
+    # broken/misconfigured LLM take the whole health check down to
+    # "unhealthy"; at most this downgrades an otherwise-"ok" status to
+    # "degraded", matching the other component checks above.
+    if check_llm:
+        try:
+            from server.engine.llm_health import check_llm_health
+            llm_status = await check_llm_health(force=force)
+            status["components"]["llm"] = llm_status
+            if llm_status.get("status") != "healthy" and status["status"] == "ok":
+                status["status"] = "degraded"
+        except Exception as e:
+            status["components"]["llm"] = {"status": "error", "message": f"LLM 健康检查失败：{e}"}
+            if status["status"] == "ok":
+                status["status"] = "degraded"
 
     return status
 

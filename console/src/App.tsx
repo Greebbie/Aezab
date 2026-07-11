@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { Layout, Menu, Button, Space, Tag } from 'antd';
 import { useTranslation } from 'react-i18next';
@@ -9,12 +10,14 @@ import {
   AuditOutlined,
   DashboardOutlined,
   ExperimentOutlined,
+  MessageOutlined,
   SettingOutlined,
   ThunderboltOutlined,
   AppstoreOutlined,
   GlobalOutlined,
   HeartOutlined,
   LinkOutlined,
+  LogoutOutlined,
 } from '@ant-design/icons';
 
 import AgentsPage from './pages/AgentsPage';
@@ -24,12 +27,16 @@ import ToolsPage from './pages/ToolsPage';
 import AuditPage from './pages/AuditPage';
 import DashboardPage from './pages/DashboardPage';
 import PlaygroundPage from './pages/PlaygroundPage';
+import ConversationsPage from './pages/ConversationsPage';
 import LLMConfigsPage from './pages/LLMConfigsPage';
 import SettingsPage from './pages/SettingsPage';
 import SkillsPage from './pages/SkillsPage';
 import HealthPage from './pages/HealthPage';
 import IntegrationsPage from './pages/IntegrationsPage';
 import { LANGUAGE_STORAGE_KEY } from './i18n';
+import { useAuth } from './AuthGate';
+import { SetupWizard, SETUP_DONE_STORAGE_KEY, OPEN_SETUP_WIZARD_EVENT } from './components/setup';
+import { agentApi, llmConfigApi } from './api';
 
 const { Header, Sider, Content } = Layout;
 
@@ -37,6 +44,8 @@ export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const { t, i18n } = useTranslation();
+  const { authEnabled, logout } = useAuth();
+  const [setupWizardOpen, setSetupWizardOpen] = useState(false);
 
   const toggleLang = () => {
     const next = i18n.language === 'zh' ? 'en' : 'zh';
@@ -44,9 +53,34 @@ export default function App() {
     localStorage.setItem(LANGUAGE_STORAGE_KEY, next);
   };
 
+  const maybeAutoOpenSetupWizard = useCallback(async () => {
+    if (localStorage.getItem(SETUP_DONE_STORAGE_KEY) === 'true') return;
+    try {
+      const [llmRes, agentsRes] = await Promise.all([llmConfigApi.list(), agentApi.list()]);
+      const hasLlmConfig = Array.isArray(llmRes.data) && llmRes.data.length > 0;
+      const hasAgent = Array.isArray(agentsRes.data) && agentsRes.data.length > 0;
+      if (!hasLlmConfig && !hasAgent) {
+        setSetupWizardOpen(true);
+      }
+    } catch {
+      // Backend unreachable — AuthGate already surfaces this; stay silent here.
+    }
+  }, []);
+
+  useEffect(() => {
+    maybeAutoOpenSetupWizard();
+  }, [maybeAutoOpenSetupWizard]);
+
+  useEffect(() => {
+    const handleOpenSetupWizard = () => setSetupWizardOpen(true);
+    window.addEventListener(OPEN_SETUP_WIZARD_EVENT, handleOpenSetupWizard);
+    return () => window.removeEventListener(OPEN_SETUP_WIZARD_EVENT, handleOpenSetupWizard);
+  }, []);
+
   const menuItems = [
     { key: '/', icon: <DashboardOutlined />, label: t('nav.dashboard') },
     { key: '/playground', icon: <ExperimentOutlined />, label: t('nav.playground') },
+    { key: '/conversations', icon: <MessageOutlined />, label: t('nav.conversations') },
     { key: '/integrations', icon: <LinkOutlined />, label: t('nav.integrations') },
     { key: '/agents', icon: <RobotOutlined />, label: t('nav.agents') },
     { key: '/skills', icon: <AppstoreOutlined />, label: t('nav.skills') },
@@ -93,6 +127,11 @@ export default function App() {
             <Button type="text" icon={<GlobalOutlined />} onClick={toggleLang}>
               {i18n.language === 'zh' ? 'EN' : '中文'}
             </Button>
+            {authEnabled && (
+              <Button type="text" icon={<LogoutOutlined />} onClick={logout}>
+                {t('auth.logout')}
+              </Button>
+            )}
           </Space>
         </Header>
         <Content className="aezab-content">
@@ -100,6 +139,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/playground" element={<PlaygroundPage />} />
+              <Route path="/conversations" element={<ConversationsPage />} />
               <Route path="/integrations" element={<IntegrationsPage />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/workflows" element={<WorkflowsPage />} />
@@ -114,6 +154,7 @@ export default function App() {
           </div>
         </Content>
       </Layout>
+      <SetupWizard open={setupWizardOpen} onClose={() => setSetupWizardOpen(false)} />
     </Layout>
   );
 }

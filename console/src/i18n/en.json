@@ -53,6 +53,7 @@
   "nav": {
     "dashboard": "Dashboard",
     "playground": "Playground",
+    "conversations": "Conversations",
     "integrations": "Integrations",
     "agents": "Agents",
     "skills": "Skills",
@@ -109,8 +110,44 @@
       "toolCalls": "Number of HTTP or built-in tool calls made by agents. Use it to confirm backend integrations are being used.",
       "avgLatency": "Average knowledge retrieval latency. If it is high, review top_k, chunk size, vector model, or reranker settings.",
       "avgLLMLatency": "Average model call latency. Provider speed, context length, and tool rounds all affect this.",
-      "circuitBreaker": "Closed means normal calls; Open means calls are temporarily blocked after repeated failures; Half Open means the system is probing recovery."
+      "circuitBreaker": "Closed means normal calls; Open means calls are temporarily blocked after repeated failures; Half Open means the system is probing recovery.",
+      "usage": "Token usage roughly reflects your model bill — it does not include a currency conversion since providers price tokens differently."
+    },
+    "setupCta": {
+      "title": "Get your first agent live in three steps",
+      "description": "Connect an AI model, pick a template, and start chatting.",
+      "action": "Start Setup"
+    },
+    "usage": {
+      "title": "Token Usage (Last 30 Days)",
+      "totalTokens": "Total Tokens",
+      "totalInvocations": "Total Conversations Handled",
+      "promptTokens": "Input Tokens",
+      "completionTokens": "Output Tokens",
+      "byDay": "Daily Trend",
+      "noData": "No usage data yet. Statistics will appear automatically once conversations start.",
+      "loadFailed": "Failed to load usage statistics"
     }
+  },
+  "conversations": {
+    "eyebrow": "Conversation History",
+    "title": "Conversations",
+    "description": "Browse what customers have been asking your agents and how they responded — no technical jargon, just the conversation.",
+    "sessionList": "Sessions",
+    "filterByAgent": "Filter by agent",
+    "agent": "Agent",
+    "summary": "Summary",
+    "noSummary": "(no message yet)",
+    "messageCount": "Messages",
+    "startedAt": "Started",
+    "lastActive": "Last Active",
+    "noSessions": "No conversations yet. They will show up here once a customer starts chatting with an agent.",
+    "transcript": "Transcript",
+    "selectSessionHint": "Select a conversation on the left to view the full transcript.",
+    "noMessages": "This conversation has no messages yet.",
+    "roleUser": "Customer",
+    "roleAssistant": "Agent",
+    "emptyMessage": "(empty message)"
   },
   "agents": {
     "title": "Agent Management",
@@ -192,7 +229,12 @@
       "rollback": "Rollback",
       "escalate": "Escalate"
     },
-    "deleteConfirm": "Are you sure you want to delete this workflow?"
+    "deleteConfirm": "Are you sure you want to delete this workflow?",
+    "deleteInUseTitle": "This resource is used by {{count}} agent(s)",
+    "deleteInUseBody": "Deleting it will make these agents unable to use this capability.",
+    "deleteInUseMore": " and {{count}} more",
+    "deleteAnyway": "Delete anyway",
+    "usageCheckFailed": "Failed to check usage"
   },
   "knowledge": {
     "title": "Knowledge Base",
@@ -246,6 +288,11 @@
     },
     "uploadSuccess": "Upload and chunking successful",
     "deleteConfirm": "Delete this knowledge source and all of its chunks?",
+    "deleteInUseTitle": "This resource is used by {{count}} agent(s)",
+    "deleteInUseBody": "Deleting it will make these agents unable to use this capability.",
+    "deleteInUseMore": " and {{count}} more",
+    "deleteAnyway": "Delete anyway",
+    "usageCheckFailed": "Failed to check usage",
     "help": {
       "page": "When an agent answers a knowledge question, Aezab searches the bound sources first: fast KV, BM25 keyword, and vector retrieval run together, results are fused and optionally reranked, then the LLM answers with that context.",
       "sourceType": "Choose how the material should be organized: Document for manuals and policies, FAQ for standard Q&A, KV for exact facts like phone numbers or prices, Structured Table for CSV/XLSX rows.",
@@ -273,6 +320,16 @@
       "loadChunksFailed": "Failed to load chunks",
       "deleted": "Deleted",
       "deleteFailed": "Delete failed"
+    },
+    "modelStatus": {
+      "notDownloadedTitle": "Vector model not downloaded",
+      "notDownloadedDesc": "The vector model ({{model}}, ~2GB) has not been downloaded yet. It needs to be downloaded before uploading documents; other features remain available while it downloads.",
+      "downloadButton": "Download Now",
+      "downloadingTitle": "Downloading vector model",
+      "downloadingDesc": "Downloading the vector model... users in mainland China are automatically routed through a mirror. You can leave this page; the download continues in the background.",
+      "errorTitle": "Vector model download failed",
+      "retryButton": "Retry",
+      "uploadWarning": "The vector model is not ready yet; uploads will only be searchable via keyword retrieval until it finishes. Downloading it first is recommended."
     }
   },
   "tools": {
@@ -294,7 +351,12 @@
       "webhook": "Webhook",
       "rpc": "RPC"
     },
-    "deleteConfirm": "Are you sure you want to delete this tool?"
+    "deleteConfirm": "Are you sure you want to delete this tool?",
+    "deleteInUseTitle": "This resource is used by {{count}} agent(s)",
+    "deleteInUseBody": "Deleting it will make these agents unable to use this capability.",
+    "deleteInUseMore": " and {{count}} more",
+    "deleteAnyway": "Delete anyway",
+    "usageCheckFailed": "Failed to check usage"
   },
   "skills": {
     "title": "Skill Management",
@@ -313,22 +375,53 @@
     "deleteConfirm": "Are you sure you want to delete this skill?"
   },
   "llmConfigs": {
-    "title": "LLM Configuration",
+    "title": "LLM Configuration Management",
     "create": "Create Config",
     "edit": "Edit Config",
     "provider": "Provider",
     "baseUrl": "Base URL",
+    "baseUrlHelp": "The web address of the model service. Auto-filled when you pick a provider above.",
+    "baseUrlRequired": "Base URL is required",
     "apiKey": "API Key",
+    "apiKeyHelp": "The secret key from your provider's account page. Stored encrypted on the server.",
+    "apiKeyPlaceholder": "sk-... (leave empty for local models)",
+    "apiKeySavedPlaceholder": "Saved (leave blank to keep unchanged)",
     "model": "Model Name",
+    "modelHelp": "Not sure? The default value usually works.",
+    "modelRequired": "Model name is required",
     "temperature": "Temperature",
+    "temperatureHelp": "How random the answers are. Lower is more precise and consistent, higher is more creative. Default works for most cases.",
+    "topP": "Top P",
+    "topPHelp": "Another way to control randomness, alongside Temperature. Usually left at the default.",
     "maxTokens": "Max Tokens",
+    "maxTokensHelp": "The maximum length of a single answer. Higher allows longer replies but costs more and is slower.",
+    "timeout": "Timeout (ms)",
+    "timeoutHelp": "How long to wait for the model before giving up. Increase this if you see timeout errors.",
     "isDefault": "Default Config",
     "setDefault": "Set as Default",
-    "loadTemplate": "Load Template",
-    "testConfig": "Test Config",
-    "testSuccess": "Test successful",
-    "testFailed": "Test failed",
-    "deleteConfirm": "Are you sure you want to delete this config?"
+    "setDefaultSuccess": "Default configuration updated",
+    "testConfig": "Test Connection",
+    "testSuccess": "Connection test passed",
+    "testFailed": "Connection test failed",
+    "testFillRequired": "Fill in the base URL and model name before testing.",
+    "testNeedsKey": "Enter the API key again before testing this connection.",
+    "testPassedTitle": "Test Passed",
+    "testFailedTitle": "Test Failed",
+    "testResponse": "Response",
+    "testLatency": "Latency",
+    "testError": "Error",
+    "presetHint": "Pick a provider below to auto-fill its connection details, or choose Custom for any OpenAI-compatible endpoint.",
+    "pickProviderFirst": "Pick a provider above first",
+    "advancedSettings": "Advanced Settings",
+    "namePlaceholder": "e.g., Production Config",
+    "nameRequired": "Name is required",
+    "defaultTag": "Default",
+    "columnCreated": "Created",
+    "createSuccess": "LLM configuration created",
+    "updateSuccess": "LLM configuration updated",
+    "deleteSuccess": "LLM configuration deleted",
+    "deleteConfirm": "Are you sure you want to delete this config?",
+    "deleteConfirmDescription": "This action cannot be undone."
   },
   "settings": {
     "title": "Settings",
@@ -364,6 +457,186 @@
     "showTrace": "Show Trace",
     "streaming": "Streaming response...",
     "citations": "Citations",
-    "followups": "Suggested Follow-ups"
+    "followups": "Suggested Follow-ups",
+    "checkLlmConfigHint": "You can check this on the LLM Configs page (test connection)."
+  },
+  "agentTemplates": {
+    "fromTemplate": "From Template",
+    "modalTitle": "Create Agent From Template",
+    "stepSelectTemplate": "Select Template",
+    "stepConfigure": "Configure Instance",
+    "stepKnowledge": "Knowledge",
+    "selectTemplateHint": "Pick a built-in template to stamp out a ready-to-use agent.",
+    "agentName": "Agent Name",
+    "agentNamePlaceholder": "Leave empty to use the template name",
+    "llmConfig": "LLM Configuration",
+    "llmConfigPlaceholder": "Select an LLM config (optional, defaults to system default)",
+    "createAgent": "Create Agent",
+    "back": "Back",
+    "next": "Next",
+    "finish": "Finish",
+    "skip": "Skip, configure later",
+    "knowledgeOnboardingTitle": "Add Knowledge Sources",
+    "knowledgeOnboardingHint": "This template relies on a knowledge base to answer questions. Select the sources it should search.",
+    "selectKnowledgeSources": "Select Knowledge Sources",
+    "noKnowledgeSourcesHint": "No knowledge sources yet? Go upload documents on the Knowledge page first.",
+    "goToKnowledge": "Go to Knowledge Page",
+    "loadTemplatesFailed": "Failed to load templates",
+    "instantiateFailed": "Failed to create agent",
+    "loadCapabilitiesFailed": "Failed to load agent capabilities",
+    "saveKnowledgeFailed": "Failed to save knowledge binding",
+    "agentCreated": "Agent created",
+    "knowledgeSaved": "Knowledge binding saved",
+    "categories": {
+      "customer_service": "Customer Service",
+      "operations": "Operations",
+      "booking": "Booking"
+    }
+  },
+  "eventSubscriptions": {
+    "tab": "Event Subscriptions",
+    "title": "Event Subscriptions",
+    "create": "New Subscription",
+    "edit": "Edit Subscription",
+    "name": "Name",
+    "namePlaceholder": "e.g. Ticket system callback",
+    "url": "URL",
+    "urlPlaceholder": "https://your-system.example.com/webhooks/hlab",
+    "secret": "Secret",
+    "secretPlaceholder": "Leave blank when editing to keep the current secret",
+    "events": "Event Types",
+    "eventsPlaceholder": "Select or type an event type",
+    "enabled": "Enabled",
+    "createdAt": "Created At",
+    "actions": "Actions",
+    "save": "Save",
+    "delete": "Delete",
+    "deleteConfirm": "Are you sure you want to delete this subscription?",
+    "allEvents": "All Events (*)",
+    "verificationHint": "Callback requests carry X-HlAB-Event and X-HlAB-Signature headers. The signature is sha256=<hmac_sha256(secret, raw_body)> — verify it with your subscription secret.",
+    "docsLink": "View Integration Docs",
+    "createSuccess": "Subscription created",
+    "updateSuccess": "Subscription updated",
+    "deleteSuccess": "Subscription deleted",
+    "toggleFailed": "Failed to update enabled state",
+    "loadFailed": "Failed to load subscriptions",
+    "saveFailed": "Failed to save subscription",
+    "deleteFailed": "Failed to delete subscription",
+    "invalidUrl": "URL must start with http:// or https://",
+    "noSubscriptions": "No event subscriptions yet"
+  },
+  "auth": {
+    "title": "Sign in to Aezab",
+    "setupTitle": "Create an admin account",
+    "setupSubtitle": "It looks like this is your first time here — create an admin account to sign in to this console.",
+    "username": "Username",
+    "password": "Password",
+    "confirmPassword": "Confirm Password",
+    "login": "Log In",
+    "createAdmin": "Create Admin Account",
+    "logout": "Log Out",
+    "errorBadCredentials": "Incorrect username or password",
+    "errorPasswordMismatch": "Passwords do not match",
+    "errorPasswordTooShort": "Password must be at least 8 characters",
+    "errorGeneric": "Something went wrong. Please try again.",
+    "serverUnreachable": "Cannot reach the server. Please check that the backend is running.",
+    "retry": "Retry"
+  },
+  "setup": {
+    "modalTitle": "First-Time Setup",
+    "stepConnectModel": "Connect a Model",
+    "stepCreateAgent": "Create an Agent",
+    "stepDone": "Done",
+    "step1": {
+      "title": "Connect an AI model — it's your agent's brain",
+      "hint": "Pick a provider below. Most only need an API key to get started.",
+      "fillRequired": "Fill in the model name and address before testing.",
+      "testButton": "Test Connection",
+      "testSuccess": "Connected — the model replied successfully.",
+      "testFailedGeneric": "Connection test failed.",
+      "createFailed": "Failed to save the model configuration.",
+      "showRawError": "Show technical details",
+      "advancedSettings": "Advanced Settings",
+      "advancedSettingsHint": "Using your own relay or proxy endpoint? Override the service address here.",
+      "testErrors": {
+        "authError": "The API key looks wrong or isn't active yet. Double-check you copied the whole key.",
+        "networkError": "Couldn't reach that address. Check your network connection or the service address.",
+        "otherError": "The test failed. See technical details below."
+      }
+    },
+    "providers": {
+      "dashscope": {
+        "name": "Qwen (DashScope)",
+        "description": "From Alibaba Cloud. Direct access in mainland China, free credits on sign-up."
+      },
+      "zhipu": {
+        "name": "Zhipu GLM",
+        "description": "GLM models from Zhipu AI, strong at Chinese conversation."
+      },
+      "minimax": {
+        "name": "MiniMax",
+        "description": "MiniMax's OpenAI-compatible API, good at reasoning tasks."
+      },
+      "openai": {
+        "name": "OpenAI",
+        "description": "GPT models directly from OpenAI. Needs an API key with available credit."
+      },
+      "ollama": {
+        "name": "Ollama (Local, Free)",
+        "description": "Runs on your own machine, no API key or internet required."
+      },
+      "custom": {
+        "name": "Custom",
+        "description": "Connect any OpenAI-compatible endpoint you already have."
+      }
+    },
+    "fields": {
+      "baseUrl": "Service Address",
+      "baseUrlHelp": "The API address for your model service.",
+      "apiKey": "API Key",
+      "apiKeyHelp": "Found on your provider's account or API keys page.",
+      "apiKeyPlaceholder": "Paste your API key here",
+      "model": "Model Name",
+      "modelHelp": "Not sure? The default value usually works."
+    },
+    "step2": {
+      "title": "Create your first agent",
+      "hint": "Pick a template that fits your use case — it comes pre-configured and ready to use.",
+      "loadFailed": "Failed to load agent templates.",
+      "createFailed": "Failed to create the agent.",
+      "namePlaceholder": "Agent name (optional)",
+      "skip": "Skip, configure later",
+      "createButton": "Create"
+    },
+    "step3": {
+      "title": "\"{{name}}\" is ready",
+      "titleGeneric": "Your agent is ready",
+      "goToPlayground": "Try a Conversation",
+      "knowledgeHint": "Want it to know your business better? Upload documents on the Knowledge page."
+    }
+  },
+  "errors": {
+    "unauthorized": "Your login has expired or your credentials are invalid. Please sign in again.",
+    "forbidden": "You don't have permission to perform this action.",
+    "rateLimited": "Too many requests, or the account has run out of quota/balance. Please try again later.",
+    "serverError": "The server ran into a problem. Please try again in a moment.",
+    "timeout": "The request timed out — the server may be downloading a model or under heavy load. Please try again later.",
+    "network": "Can't reach the backend service. Please check that it is running.",
+    "generic": "Something went wrong."
+  },
+  "health": {
+    "title": "System Health",
+    "llmComponent": "LLM Connectivity",
+    "recheck": "Re-check",
+    "goToLlmConfigs": "Go to LLM Configs",
+    "checkLlmHint": "Checks whether the LLM can be reached with the currently configured API key. Costs one real LLM call.",
+    "llm": {
+      "healthy": "LLM connection is healthy.",
+      "auth_error": "The API key is invalid or expired. Go to the LLM Configs page and re-test the connection.",
+      "rate_limited": "Rate limited or out of credit. Check your provider account balance or try again later.",
+      "unreachable": "Couldn't reach the LLM service address. Check your network connection or the Base URL.",
+      "not_configured": "No default LLM is configured yet. Go to the LLM Configs page and add one, then set it as default.",
+      "error": "The LLM call failed. Go to the LLM Configs page and test the connection for details."
+    }
   }
 }
