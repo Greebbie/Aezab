@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import re
@@ -23,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 # Maximum recursion depth for auto-advancing non-interactive steps
 MAX_AUTO_ADVANCE_DEPTH = 20
+
+# Complete-step webhook retry policy (same exponential-backoff shape as
+# ToolGateway.invoke: 3 retries beyond the first attempt -> 1s/2s/4s gaps).
+WEBHOOK_MAX_RETRIES = 3
+WEBHOOK_RETRY_BACKOFF_S = 1.0
 
 
 # ── Built-in validators ─────────────────────────────────────────
@@ -69,11 +76,18 @@ class WorkflowExecutor:
         self.audit = audit
 
     def cancel_workflow(self, session: ConversationSession) -> str:
-        """Cancel the current workflow and preserve collected data for potential resume."""
+        """Cancel the current workflow.
+
+        Clears `collected_data` too (there is no cancelled-workflow resume
+        feature) so a new workflow started afterward never inherits a
+        previous ticket's field values — see W1-T5.
+        """
         state = dict(session.workflow_state or {})
         state["status"] = "cancelled"
         session.workflow_state = state
+        session.collected_data = {}
         flag_modified(session, "workflow_state")
+        flag_modified(session, "collected_data")
         return "已退出当前流程。如需继续，随时告诉我。"
 
     async def get_steps(self, workflow_id: str) -> list[WorkflowStep]:
@@ -156,38 +170,62 @@ class WorkflowExecutor:
         if not fields:
             return await self._advance(steps, idx, session, _depth)
 
-        if form_data:
-            # Validate submitted data
+        # ── Natural-language field extraction ─────────────────────
+        # form_data (structured submission) always wins over free-form chat.
+        # Only attempt extraction when there is no form_data but the user did
+        # say something.
+        effective_form_data = form_data
+        if not effective_form_data and (user_input or "").strip():
+            extracted = await self._extract_fields_from_text(user_input, fields, collected)
+            if extracted is None:
+                # LLM unavailable or extraction failed outright — never crash
+                # the workflow, fall back to today's re-prompt behavior.
+                effective_form_data = None
+            elif not extracted:
+                # Valid (parseable) but empty extraction — the message was
+                # off-topic / didn't contain any recognizable field values.
+                return WorkflowStepResult(
+                    status="waiting_input",
+                    message=(
+                        (step.prompt_template or f"请填写以下信息: {', '.join(f.get('label', '') for f in fields)}")
+                        + '\n（如需退出当前流程，请回复"取消"）'
+                    ),
+                    card=self._make_card(step, steps, idx),
+                )
+            else:
+                effective_form_data = extracted
+
+        if effective_form_data:
+            # Incremental validation: fields may arrive across several turns
+            # (one message per field in conversational mode). Fields already
+            # collected in earlier turns are not re-required; valid values
+            # from this turn are persisted even when other fields are still
+            # missing, so partial progress is never thrown away.
             errors = []
+            missing_labels = []
+            provided_fields = []
             for field_def in fields:
                 fname = field_def.get("name", "")
                 ftype = field_def.get("field_type", "text")
-                val = form_data.get(fname, "")
 
-                # File field validation
-                if ftype == "file":
-                    err = self._validate_file_field(val, field_def)
-                    if err:
-                        errors.append(err)
-                    else:
-                        collected[fname] = val  # Store file reference (path/URL)
+                if fname not in effective_form_data:
+                    if not collected.get(fname) and field_def.get("required", True):
+                        missing_labels.append(field_def.get("label") or fname)
                     continue
 
-                err = validate_field(str(val) if val else "", field_def)
+                val = effective_form_data.get(fname, "")
+                if ftype == "file":
+                    err = self._validate_file_field(val, field_def)
+                else:
+                    err = validate_field(str(val) if val else "", field_def)
                 if err:
                     errors.append(err)
                 else:
                     collected[fname] = val
+                    provided_fields.append(field_def)
 
-            if errors:
-                return WorkflowStepResult(
-                    status="waiting_input",
-                    message="请修正以下问题:\n" + "\n".join(f"- {e}" for e in errors),
-                    card=self._make_card(step, steps, idx),
-                )
-
-            # LLM-assisted validation for fields that request it
-            for field_def in fields:
+            # LLM-assisted validation only for fields provided this turn
+            for field_def in provided_fields:
                 if not field_def.get("llm_validate"):
                     continue
                 fname = field_def.get("name", "")
@@ -197,6 +235,14 @@ class WorkflowExecutor:
                 llm_err = await self._llm_validate_field(val, field_def)
                 if llm_err:
                     errors.append(llm_err)
+                    collected.pop(fname, None)
+                    if field_def.get("required", True):
+                        missing_labels.append(field_def.get("label") or fname)
+
+            # Persist whatever validated cleanly, even on a partial turn
+            if provided_fields:
+                session.collected_data = collected
+                flag_modified(session, "collected_data")
 
             if errors:
                 return WorkflowStepResult(
@@ -205,9 +251,19 @@ class WorkflowExecutor:
                     card=self._make_card(step, steps, idx),
                 )
 
-            # All valid → advance
-            session.collected_data = collected
-            flag_modified(session, "collected_data")
+            if missing_labels:
+                saved = [
+                    (f.get("label") or f.get("name", ""))
+                    for f in fields if collected.get(f.get("name", ""))
+                ]
+                saved_note = f"已记录：{'、'.join(saved)}。\n" if saved else ""
+                return WorkflowStepResult(
+                    status="waiting_input",
+                    message=f"{saved_note}还需要以下信息：{'、'.join(missing_labels)}",
+                    card=self._make_card(step, steps, idx),
+                )
+
+            # All fields present and valid → advance
             return await self._advance(steps, idx, session, _depth)
 
         # No form data yet — prompt user
@@ -245,6 +301,106 @@ class WorkflowExecutor:
 
         return None
 
+    async def _extract_fields_from_text(
+        self, user_input: str, fields: list[dict], collected: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Ask the LLM to extract field values from a free-form chat message.
+
+        Returns:
+        - a dict (possibly empty) when the LLM call succeeded and its
+          response could be parsed as a JSON object — an empty dict means
+          the message did not contain any recognizable field value.
+        - None when the LLM is unavailable, the call failed, or its
+          response could not be parsed at all. Callers must treat None as
+          "extraction did not happen" and fall back to the legacy prompt —
+          never crash the workflow because of an LLM hiccup.
+        """
+        try:
+            from server.engine.llm_adapter import LLMMessage, get_llm_adapter
+            llm = get_llm_adapter()
+        except Exception as e:
+            logger.warning("LLM unavailable for field extraction: %s", e)
+            return None
+
+        field_lines = []
+        for f in fields:
+            requiredness = "必填" if f.get("required", True) else "选填"
+            field_lines.append(
+                f"- 字段名: {f.get('name', '')}，标签: {f.get('label', '')}，"
+                f"类型: {f.get('field_type', 'text')}，{requiredness}"
+            )
+
+        already_collected = {k: v for k, v in (collected or {}).items() if not str(k).startswith("_")}
+
+        prompt = f"""请从用户的输入中提取以下字段的值，只输出一个JSON对象。
+
+字段定义:
+{chr(10).join(field_lines)}
+
+已收集的信息（无需重复提取）: {json.dumps(already_collected, ensure_ascii=False)}
+
+用户输入: {user_input}
+
+规则:
+1. 只输出JSON对象，key为字段名，value为从用户输入中提取到的值。
+2. 只提取用户在本次输入中明确提供的字段，绝不猜测或编造用户未提供的字段。
+3. 如果用户的输入没有提供任何可识别的字段值，输出空JSON对象 {{}}。
+4. 不要输出JSON对象以外的任何说明文字。"""
+
+        try:
+            resp = await llm.chat(
+                [LLMMessage(role="user", content=prompt)],
+                max_tokens=300,
+                temperature=0.0,
+            )
+        except Exception as e:
+            logger.warning("Field extraction LLM call failed: %s", e)
+            if self.audit:
+                self.audit.log("workflow_step", workflow_meta={
+                    "status": "field_extraction_failed",
+                    "error": str(e),
+                })
+            return None
+
+        extracted = self._parse_extraction_json(resp.content)
+        if extracted is None:
+            logger.warning("Field extraction returned unparseable content: %r", resp.content)
+            if self.audit:
+                self.audit.log("workflow_step", workflow_meta={
+                    "status": "field_extraction_unparseable",
+                    "raw": (resp.content or "")[:200],
+                })
+        return extracted
+
+    @staticmethod
+    def _parse_extraction_json(content: str | None) -> dict[str, Any] | None:
+        """Defensively parse the LLM's extraction response into a dict.
+
+        Handles bare JSON, ```json fenced blocks, and JSON embedded in
+        surrounding prose. Returns None if nothing parseable is found.
+        """
+        text = (content or "").strip()
+        if not text:
+            return None
+
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        candidate = fence_match.group(1) if fence_match else text
+
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            brace_match = re.search(r"\{.*\}", text, re.DOTALL)
+            if not brace_match:
+                return None
+            try:
+                data = json.loads(brace_match.group(0))
+            except json.JSONDecodeError:
+                return None
+
+        if not isinstance(data, dict):
+            return None
+        return data
+
     async def _llm_validate_field(self, value: str, field_def: dict) -> str | None:
         """Use LLM to semantically validate a field value."""
         prompt = field_def.get("llm_validate_prompt")
@@ -271,6 +427,12 @@ class WorkflowExecutor:
             return f"'{field_def.get('label', '')}': {result}"
         except Exception as e:
             logger.warning(f"LLM validation failed for field '{field_def.get('name')}': {e}")
+            if self.audit:
+                self.audit.log("workflow_step", workflow_meta={
+                    "status": "llm_validation_skipped",
+                    "field": field_def.get("name"),
+                    "error": str(e),
+                })
             return None  # Fail open: if LLM validation fails, don't block the user
 
     async def _handle_validate(self, step, steps, idx, collected, session, _depth: int = 0) -> WorkflowStepResult:
@@ -312,8 +474,17 @@ class WorkflowExecutor:
         if not input_mapping:
             tool_input = collected
 
+        # Submission idempotency: reuse the workflow-level key so a retried
+        # tool call can be deduplicated by the receiving end.
+        idempotency_key = (session.workflow_state or {}).get("idempotency_key")
+        extra_headers = None
+        if idempotency_key:
+            idem_value = f"{idempotency_key}:{step.id}"
+            extra_headers = {"X-Idempotency-Key": idem_value}
+            tool_input = {**tool_input, "idempotency_key": idem_value}
+
         try:
-            result = await self.tool_gw.invoke(step.tool_id, tool_input)
+            result = await self.tool_gw.invoke(step.tool_id, tool_input, extra_headers=extra_headers)
             # Store tool output
             output_mapping = tool_config.get("output_mapping", {})
             for local_field, tool_field in output_mapping.items():
@@ -340,6 +511,15 @@ class WorkflowExecutor:
             if step.on_failure == "skip":
                 return await self._advance(steps, idx, session, _depth)
             elif step.on_failure == "escalate":
+                # Tool-call escalation is a hard stop this wave (no resume
+                # path like human_review's "paused_for_review"), so clear
+                # the workflow ourselves rather than relying on the caller
+                # to treat "escalated" as terminal.
+                session.workflow_state = None
+                session.collected_data = {}
+                session.active_skill_id = None
+                flag_modified(session, "workflow_state")
+                flag_modified(session, "collected_data")
                 return WorkflowStepResult(
                     status="escalated",
                     message=f"工具调用失败，已转人工处理。原因: {e}",
@@ -380,16 +560,48 @@ class WorkflowExecutor:
         )
 
     async def _handle_human_review(self, step, steps, idx, session) -> WorkflowStepResult:
-        """Pause for human review."""
+        """Pause for human review — resumable, unlike a hard escalation.
+
+        Keeps `workflow_state` alive with status "paused_for_review" (and
+        the current step index) instead of letting the caller treat
+        "escalated" as terminal and wipe it. A later "继续"/"resume" message
+        advances past this step (see AgentRuntime._continue_active_workflow).
+        """
         if self.audit:
             self.audit.log("escalation", escalation_reason=f"步骤 '{step.name}' 需要人工审核",
                           workflow_meta={"step_id": step.id, "step_name": step.name})
+
+        session.workflow_state = {
+            **(session.workflow_state or {}),
+            "current_step_index": idx,
+            "status": "paused_for_review",
+        }
+        flag_modified(session, "workflow_state")
 
         return WorkflowStepResult(
             status="escalated",
             message=step.prompt_template or "该步骤需要人工审核，请等待工作人员处理。",
             escalated=True,
         )
+
+    async def resume_after_review(self, session: ConversationSession) -> WorkflowStepResult:
+        """Advance past a human_review step after the user asks to resume.
+
+        MVP resume (no external human-approval API this wave): the user's
+        own "继续"/"resume" message is treated as the reviewer having
+        finished, and we simply move on to the next step.
+        """
+        state = session.workflow_state or {}
+        workflow_id = state.get("workflow_id")
+        current_step_index = state.get("current_step_index", 0)
+        if not workflow_id:
+            return WorkflowStepResult(status="error", message="会话未关联工作流")
+
+        steps = await self.get_steps(workflow_id)
+        if not steps or current_step_index >= len(steps):
+            return WorkflowStepResult(status="error", message="无法恢复：工作流状态无效。")
+
+        return await self._advance(steps, current_step_index, session)
 
     async def _handle_complete(self, step, steps, idx, collected, session) -> WorkflowStepResult:
         """Final step — workflow is done.  Optionally POST collected data to a webhook."""
@@ -405,34 +617,11 @@ class WorkflowExecutor:
         # ── Webhook: send collected data to external endpoint ──
         tool_config = step.tool_config or {}
         webhook_url = tool_config.get("webhook_url")
+        webhook_exhausted = False
         if webhook_url and tool_config.get("webhook_enabled"):
-            method = tool_config.get("webhook_method", "POST").upper()
-            headers = tool_config.get("webhook_headers") or {}
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.request(method, webhook_url, json=user_data, headers=headers)
-                    collected["_webhook_result"] = {
-                        "status": resp.status_code,
-                        "ok": resp.is_success,
-                    }
-                    session.collected_data = collected
-                    flag_modified(session, "collected_data")
-            except Exception as e:
-                logger.warning("Webhook failed for workflow complete step '%s': %s", step.name, e)
-                collected["_webhook_result"] = {
-                    "status": 0,
-                    "ok": False,
-                    "error": str(e),
-                }
-                session.collected_data = collected
-                flag_modified(session, "collected_data")
-                if self.audit:
-                    self.audit.log("workflow_step", workflow_meta={
-                        "step_id": step.id,
-                        "step_name": step.name,
-                        "status": "webhook_failed",
-                        "error": str(e),
-                    })
+            webhook_exhausted = not await self._deliver_complete_webhook(
+                step, idx, tool_config, webhook_url, user_data, collected, session,
+            )
 
         card = self._make_card(step, steps, idx, collected_data=user_data)
 
@@ -441,11 +630,100 @@ class WorkflowExecutor:
         if webhook_result:
             card.webhook_result = webhook_result
 
+        if webhook_exhausted:
+            # Keep the workflow alive on this same (complete) step so the
+            # user's next message can retry instead of hitting a dead end.
+            return WorkflowStepResult(
+                status="await_retry",
+                message=(
+                    "已收集完所有信息，但提交到外部系统失败（已多次重试），数据已保留。"
+                    '回复"重试"重新提交，或"取消"放弃。'
+                ),
+                card=card,
+            )
+
+        # Honest completion message: never claim success if the webhook failed
+        base_msg = step.prompt_template or "流程已完成！感谢您的办理。"
+
         return WorkflowStepResult(
             status="completed",
-            message=step.prompt_template or "流程已完成！感谢您的办理。",
+            message=base_msg,
             card=card,
         )
+
+    async def _deliver_complete_webhook(
+        self, step, idx, tool_config, webhook_url, user_data, collected, session,
+    ) -> bool:
+        """POST collected data to the complete-step webhook with retry.
+
+        Returns True on success, False once all retries are exhausted. On
+        exhaustion, sets `session.workflow_state["status"] = "await_retry"`
+        so the caller does not treat the workflow as finished.
+        """
+        method = tool_config.get("webhook_method", "POST").upper()
+        headers = dict(tool_config.get("webhook_headers") or {})
+
+        # Submission idempotency: reuse the workflow-level key so a retried
+        # webhook delivery can be deduplicated by the receiver.
+        idempotency_key = (session.workflow_state or {}).get("idempotency_key")
+        idem_value = f"{idempotency_key}:{step.id}" if idempotency_key else None
+        if idem_value:
+            headers["X-Idempotency-Key"] = idem_value
+        webhook_body = {**user_data, "idempotency_key": idem_value} if idem_value else dict(user_data)
+
+        last_error: Exception | None = None
+        last_status: int | None = None
+
+        for attempt in range(WEBHOOK_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.request(method, webhook_url, json=webhook_body, headers=headers)
+                if resp.is_success:
+                    collected["_webhook_result"] = {"status": resp.status_code, "ok": True}
+                    session.collected_data = collected
+                    flag_modified(session, "collected_data")
+                    return True
+                last_status = resp.status_code
+                last_error = None
+            except Exception as e:
+                last_error = e
+                last_status = None
+
+            if attempt < WEBHOOK_MAX_RETRIES:
+                await asyncio.sleep(WEBHOOK_RETRY_BACKOFF_S * (2 ** attempt))
+
+        # All attempts exhausted
+        total_attempts = WEBHOOK_MAX_RETRIES + 1
+        if last_error is not None:
+            logger.warning(
+                "Webhook failed for workflow complete step '%s' after %d attempts: %s",
+                step.name, total_attempts, last_error,
+            )
+        collected["_webhook_result"] = {
+            "status": last_status or 0,
+            "ok": False,
+            "error": str(last_error) if last_error else None,
+            "attempts": total_attempts,
+        }
+        session.collected_data = collected
+        flag_modified(session, "collected_data")
+        session.workflow_state = {
+            **(session.workflow_state or {}),
+            "current_step_index": idx,
+            "status": "await_retry",
+            "webhook_ok": False,
+        }
+        flag_modified(session, "workflow_state")
+        if self.audit:
+            self.audit.log("workflow_step", workflow_meta={
+                "step_id": step.id,
+                "step_name": step.name,
+                "status": "webhook_failed",
+                "error": str(last_error) if last_error else None,
+                "http_status": last_status,
+                "attempts": total_attempts,
+            })
+        return False
 
     async def _advance(self, steps, current_idx, session, _depth: int = 0) -> WorkflowStepResult:
         """Move to the next step, evaluating conditional branching rules if present."""

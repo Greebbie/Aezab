@@ -11,16 +11,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from server.db import get_db
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, get_tenant_id
 from server.models.workflow import Workflow, WorkflowStep
 from server.schemas.workflow import WorkflowCreate, WorkflowUpdate, WorkflowOut, StepCreate, StepOut
 
 
-async def _load_workflow(db: AsyncSession, workflow_id: str) -> Workflow | None:
-    """Load a workflow with steps eagerly loaded (avoids async lazy-load issues)."""
-    result = await db.execute(
-        select(Workflow).where(Workflow.id == workflow_id).options(selectinload(Workflow.steps))
-    )
+async def _load_workflow(
+    db: AsyncSession, workflow_id: str, tenant_id: str | None = None,
+) -> Workflow | None:
+    """Load a workflow with steps eagerly loaded (avoids async lazy-load issues).
+
+    When tenant_id is given, the workflow must belong to that tenant or None
+    is returned (same 404 behavior as "not found" — no ownership info leak).
+    """
+    stmt = select(Workflow).where(Workflow.id == workflow_id).options(selectinload(Workflow.steps))
+    if tenant_id is not None:
+        stmt = stmt.where(Workflow.tenant_id == tenant_id)
+    result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
 
@@ -281,7 +288,9 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/", response_model=list[WorkflowOut])
-async def list_workflows(tenant_id: str = "default", db: AsyncSession = Depends(get_db)):
+async def list_workflows(
+    tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(
         select(Workflow).where(Workflow.tenant_id == tenant_id).options(selectinload(Workflow.steps))
     )
@@ -289,14 +298,18 @@ async def list_workflows(tenant_id: str = "default", db: AsyncSession = Depends(
 
 
 @router.post("/", response_model=WorkflowOut, status_code=201)
-async def create_workflow(body: WorkflowCreate, db: AsyncSession = Depends(get_db)):
+async def create_workflow(
+    body: WorkflowCreate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
     if body.steps:
         _raise_validation_errors(_validate_workflow_steps(body.steps))
 
     wf = Workflow(
         name=body.name,
         description=body.description,
-        tenant_id=body.tenant_id,
+        tenant_id=tenant_id,
         config=body.config,
     )
     db.add(wf)
@@ -330,16 +343,25 @@ async def create_workflow(body: WorkflowCreate, db: AsyncSession = Depends(get_d
 
 
 @router.get("/{workflow_id}", response_model=WorkflowOut)
-async def get_workflow(workflow_id: str, db: AsyncSession = Depends(get_db)):
-    wf = await _load_workflow(db, workflow_id)
+async def get_workflow(
+    workflow_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    wf = await _load_workflow(db, workflow_id, tenant_id)
     if not wf:
         raise HTTPException(404, "Workflow not found")
     return wf
 
 
 @router.put("/{workflow_id}", response_model=WorkflowOut)
-async def update_workflow(workflow_id: str, body: WorkflowUpdate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+async def update_workflow(
+    workflow_id: str,
+    body: WorkflowUpdate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Workflow).where(Workflow.id == workflow_id, Workflow.tenant_id == tenant_id)
+    )
     wf = result.scalar_one_or_none()
     if not wf:
         raise HTTPException(404, "Workflow not found")
@@ -350,13 +372,17 @@ async def update_workflow(workflow_id: str, body: WorkflowUpdate, db: AsyncSessi
 
     wf.version += 1
     await db.commit()
-    wf = await _load_workflow(db, wf.id)
+    wf = await _load_workflow(db, wf.id, tenant_id)
     return wf
 
 
 @router.delete("/{workflow_id}", status_code=204)
-async def delete_workflow(workflow_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+async def delete_workflow(
+    workflow_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Workflow).where(Workflow.id == workflow_id, Workflow.tenant_id == tenant_id)
+    )
     wf = result.scalar_one_or_none()
     if not wf:
         raise HTTPException(404, "Workflow not found")
@@ -371,8 +397,13 @@ async def delete_workflow(workflow_id: str, db: AsyncSession = Depends(get_db)):
 # ── Step management ──────────────────────────────────────────────
 
 @router.post("/{workflow_id}/steps", response_model=StepOut, status_code=201)
-async def add_step(workflow_id: str, body: StepCreate, db: AsyncSession = Depends(get_db)):
-    wf = await _load_workflow(db, workflow_id)
+async def add_step(
+    workflow_id: str,
+    body: StepCreate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    wf = await _load_workflow(db, workflow_id, tenant_id)
     if not wf:
         raise HTTPException(404, "Workflow not found")
     _raise_validation_errors(
@@ -403,8 +434,14 @@ async def add_step(workflow_id: str, body: StepCreate, db: AsyncSession = Depend
 
 
 @router.put("/{workflow_id}/steps/{step_id}", response_model=StepOut)
-async def update_step(workflow_id: str, step_id: str, body: StepCreate, db: AsyncSession = Depends(get_db)):
-    wf = await _load_workflow(db, workflow_id)
+async def update_step(
+    workflow_id: str,
+    step_id: str,
+    body: StepCreate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    wf = await _load_workflow(db, workflow_id, tenant_id)
     if not wf:
         raise HTTPException(404, "Workflow not found")
 
@@ -439,7 +476,15 @@ async def update_step(workflow_id: str, step_id: str, body: StepCreate, db: Asyn
 
 
 @router.delete("/{workflow_id}/steps/{step_id}", status_code=204)
-async def delete_step(workflow_id: str, step_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_step(
+    workflow_id: str,
+    step_id: str,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    wf = await _load_workflow(db, workflow_id, tenant_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
     result = await db.execute(
         select(WorkflowStep).where(WorkflowStep.id == step_id, WorkflowStep.workflow_id == workflow_id)
     )
@@ -454,11 +499,15 @@ async def delete_step(workflow_id: str, step_id: str, db: AsyncSession = Depends
 
 
 @router.post("/{workflow_id}/publish")
-async def publish_version(workflow_id: str, db: AsyncSession = Depends(get_db)):
+async def publish_version(
+    workflow_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     """Publish current workflow state as a new version snapshot."""
     from server.models.workflow import WorkflowVersion
 
-    result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
+    result = await db.execute(
+        select(Workflow).where(Workflow.id == workflow_id, Workflow.tenant_id == tenant_id)
+    )
     workflow = result.scalar_one_or_none()
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -512,9 +561,15 @@ async def publish_version(workflow_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{workflow_id}/versions")
-async def list_versions(workflow_id: str, db: AsyncSession = Depends(get_db)):
+async def list_versions(
+    workflow_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     """List all published versions of a workflow."""
     from server.models.workflow import WorkflowVersion
+
+    wf = await _load_workflow(db, workflow_id, tenant_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
 
     result = await db.execute(
         select(WorkflowVersion)
@@ -536,10 +591,17 @@ async def list_versions(workflow_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{workflow_id}/versions/{version_num}")
 async def get_version(
-    workflow_id: str, version_num: int, db: AsyncSession = Depends(get_db),
+    workflow_id: str,
+    version_num: int,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get a specific version snapshot."""
     from server.models.workflow import WorkflowVersion
+
+    wf = await _load_workflow(db, workflow_id, tenant_id)
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
 
     result = await db.execute(
         select(WorkflowVersion).where(

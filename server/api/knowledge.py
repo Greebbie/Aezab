@@ -19,7 +19,7 @@ from server.schemas.knowledge import (
     RetrievalRequest, RetrievalResponse,
 )
 from server.engine.knowledge_retriever import KnowledgeRetriever
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, get_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,11 @@ def _delete_vectors_background(chunk_ids: list[str], source_id: str) -> None:
 # ── Knowledge Sources ────────────────────────────────────────────
 
 @router.get("/sources", response_model=list[KnowledgeSourceOut])
-async def list_sources(tenant_id: str = "default", domain: str | None = None, db: AsyncSession = Depends(get_db)):
+async def list_sources(
+    tenant_id: str = Depends(get_tenant_id),
+    domain: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(KnowledgeSource).where(KnowledgeSource.tenant_id == tenant_id)
     if domain:
         stmt = stmt.where(KnowledgeSource.domain == domain)
@@ -83,12 +87,16 @@ async def list_sources(tenant_id: str = "default", domain: str | None = None, db
 
 
 @router.post("/sources", response_model=KnowledgeSourceOut, status_code=201)
-async def create_source(body: KnowledgeSourceCreate, db: AsyncSession = Depends(get_db)):
+async def create_source(
+    body: KnowledgeSourceCreate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
     source = KnowledgeSource(
         name=body.name,
         source_type=body.source_type,
         domain=body.domain,
-        tenant_id=body.tenant_id,
+        tenant_id=tenant_id,
         metadata_=body.metadata,
     )
     db.add(source)
@@ -97,8 +105,30 @@ async def create_source(body: KnowledgeSourceCreate, db: AsyncSession = Depends(
     return source
 
 
+async def _get_owned_source(
+    db: AsyncSession, source_id: str, tenant_id: str,
+) -> KnowledgeSource:
+    """Fetch a KnowledgeSource, 404ing if missing or owned by another tenant.
+
+    KnowledgeChunk rows have no tenant_id column of their own — ownership is
+    always derived by joining through their parent KnowledgeSource.
+    """
+    result = await db.execute(
+        select(KnowledgeSource).where(
+            KnowledgeSource.id == source_id, KnowledgeSource.tenant_id == tenant_id
+        )
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(404, "Source not found")
+    return source
+
+
 @router.get("/sources/{source_id}/chunks")
-async def list_chunks(source_id: str, db: AsyncSession = Depends(get_db)):
+async def list_chunks(
+    source_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    await _get_owned_source(db, source_id, tenant_id)
     result = await db.execute(
         select(KnowledgeChunk).where(KnowledgeChunk.source_id == source_id)
         .order_by(KnowledgeChunk.chunk_index)
@@ -120,12 +150,10 @@ async def list_chunks(source_id: str, db: AsyncSession = Depends(get_db)):
 async def delete_source(
     source_id: str,
     background_tasks: BackgroundTasks,
+    tenant_id: str = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(KnowledgeSource).where(KnowledgeSource.id == source_id))
-    source = result.scalar_one_or_none()
-    if not source:
-        raise HTTPException(404, "Source not found")
+    source = await _get_owned_source(db, source_id, tenant_id)
 
     chunks = await db.execute(select(KnowledgeChunk).where(KnowledgeChunk.source_id == source_id))
     chunk_rows = chunks.scalars().all()
@@ -145,8 +173,11 @@ async def delete_source(
 async def add_kv_entity(
     body: KVEntityCreate,
     background_tasks: BackgroundTasks,
+    tenant_id: str = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ):
+    source = await _get_owned_source(db, body.source_id, tenant_id)
+
     chunk = KnowledgeChunk(
         source_id=body.source_id,
         content=body.content,
@@ -156,10 +187,7 @@ async def add_kv_entity(
     )
     db.add(chunk)
     # Update source chunk count
-    result = await db.execute(select(KnowledgeSource).where(KnowledgeSource.id == body.source_id))
-    source = result.scalar_one_or_none()
-    if source:
-        source.chunk_count = (source.chunk_count or 0) + 1
+    source.chunk_count = (source.chunk_count or 0) + 1
     await db.flush()
     await db.commit()
 
@@ -174,8 +202,11 @@ async def add_kv_entity(
 async def add_faq(
     body: FAQCreate,
     background_tasks: BackgroundTasks,
+    tenant_id: str = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ):
+    source = await _get_owned_source(db, body.source_id, tenant_id)
+
     chunk = KnowledgeChunk(
         source_id=body.source_id,
         content=body.answer,
@@ -184,10 +215,7 @@ async def add_faq(
         metadata_={"question": body.question, **(body.metadata or {})},
     )
     db.add(chunk)
-    result = await db.execute(select(KnowledgeSource).where(KnowledgeSource.id == body.source_id))
-    source = result.scalar_one_or_none()
-    if source:
-        source.chunk_count = (source.chunk_count or 0) + 1
+    source.chunk_count = (source.chunk_count or 0) + 1
     await db.flush()
     await db.commit()
 
@@ -693,9 +721,9 @@ async def upload_document(
     source_id: str | None = Form(None),
     source_name: str | None = Form(None),
     domain: str = Form("default"),
-    tenant_id: str = Form("default"),
     chunk_size: int = Form(500, ge=50, le=10000),
     chunk_overlap: int = Form(50, ge=0, le=5000),
+    tenant_id: str = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a text document, split into chunks, and store in the knowledge base."""
@@ -720,11 +748,13 @@ async def upload_document(
             f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
 
-    # ── Verify source exists ─────────────────────────────────────
+    # ── Verify source exists and is owned by the caller's tenant ─
     source_id = (source_id or "").strip() or None
     if source_id:
         result = await db.execute(
-            select(KnowledgeSource).where(KnowledgeSource.id == source_id)
+            select(KnowledgeSource).where(
+                KnowledgeSource.id == source_id, KnowledgeSource.tenant_id == tenant_id
+            )
         )
         source = result.scalar_one_or_none()
         if not source:

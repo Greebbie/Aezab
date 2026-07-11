@@ -16,16 +16,20 @@ class RuntimeConfig:
         return cls._instance
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self._config.get(key, default)
+        with self._lock:
+            return self._config.get(key, default)
 
     def set(self, key: str, value: Any):
-        self._config[key] = value
+        with self._lock:
+            self._config[key] = value
 
     def update(self, data: dict):
-        self._config.update(data)
+        with self._lock:
+            self._config.update(data)
 
     def all(self) -> dict:
-        return dict(self._config)
+        with self._lock:
+            return dict(self._config)
 
 
 runtime_config = RuntimeConfig()

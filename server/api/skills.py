@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.db import get_db
 from server.models.skill import Skill
 from server.schemas.skill import SkillCreate, SkillUpdate, SkillOut
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, get_tenant_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -20,7 +20,7 @@ VALID_SKILL_TYPES = {"workflow", "tool_call", "knowledge_qa", "delegate", "compo
 
 @router.get("/", response_model=list[SkillOut])
 async def list_skills(
-    tenant_id: str = "default",
+    tenant_id: str = Depends(get_tenant_id),
     managed_by: Optional[str] = Query(None, description="Filter: 'null' for manual only, or specific tag"),
     db: AsyncSession = Depends(get_db),
 ):
@@ -34,7 +34,9 @@ async def list_skills(
 
 
 @router.post("/", response_model=SkillOut, status_code=201)
-async def create_skill(body: SkillCreate, db: AsyncSession = Depends(get_db)):
+async def create_skill(
+    body: SkillCreate, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     if body.skill_type not in VALID_SKILL_TYPES:
         raise HTTPException(400, f"Invalid skill_type. Must be one of: {VALID_SKILL_TYPES}")
 
@@ -48,7 +50,7 @@ async def create_skill(body: SkillCreate, db: AsyncSession = Depends(get_db)):
         output_schema=body.output_schema,
         priority=body.priority,
         enabled=body.enabled,
-        tenant_id=body.tenant_id,
+        tenant_id=tenant_id,
     )
     db.add(skill)
     await db.commit()
@@ -57,8 +59,10 @@ async def create_skill(body: SkillCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{skill_id}", response_model=SkillOut)
-async def get_skill(skill_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+async def get_skill(
+    skill_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Skill).where(Skill.id == skill_id, Skill.tenant_id == tenant_id))
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(404, "Skill not found")
@@ -66,8 +70,13 @@ async def get_skill(skill_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/{skill_id}", response_model=SkillOut)
-async def update_skill(skill_id: str, body: SkillUpdate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+async def update_skill(
+    skill_id: str,
+    body: SkillUpdate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Skill).where(Skill.id == skill_id, Skill.tenant_id == tenant_id))
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(404, "Skill not found")
@@ -86,8 +95,10 @@ async def update_skill(skill_id: str, body: SkillUpdate, db: AsyncSession = Depe
 
 
 @router.delete("/{skill_id}", status_code=204)
-async def delete_skill(skill_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+async def delete_skill(
+    skill_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Skill).where(Skill.id == skill_id, Skill.tenant_id == tenant_id))
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(404, "Skill not found")

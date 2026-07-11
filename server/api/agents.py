@@ -7,7 +7,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import get_db
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, get_tenant_id
 from server.models.agent import Agent
 from server.models.skill import Skill
 from server.models.agent_skill import AgentSkill
@@ -17,13 +17,17 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/", response_model=list[AgentOut])
-async def list_agents(tenant_id: str = "default", db: AsyncSession = Depends(get_db)):
+async def list_agents(tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Agent).where(Agent.tenant_id == tenant_id))
     return result.scalars().all()
 
 
 @router.post("/", response_model=AgentOut, status_code=201)
-async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
+async def create_agent(
+    body: AgentCreate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
     agent = Agent(
         name=body.name,
         description=body.description,
@@ -33,7 +37,7 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
         response_config=body.response_config,
         risk_config=body.risk_config,
         enabled=body.enabled,
-        tenant_id=body.tenant_id,
+        tenant_id=tenant_id,
     )
     db.add(agent)
     await db.commit()
@@ -42,8 +46,10 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{agent_id}", response_model=AgentOut)
-async def get_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+async def get_agent(
+    agent_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(404, "Agent not found")
@@ -51,8 +57,13 @@ async def get_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/{agent_id}", response_model=AgentOut)
-async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+async def update_agent(
+    agent_id: str,
+    body: AgentUpdate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(404, "Agent not found")
@@ -68,8 +79,10 @@ async def update_agent(agent_id: str, body: AgentUpdate, db: AsyncSession = Depe
 
 
 @router.delete("/{agent_id}", status_code=204)
-async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+async def delete_agent(
+    agent_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(404, "Agent not found")
@@ -88,7 +101,9 @@ async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/bulk-update")
-async def bulk_update_agents(body: dict, db: AsyncSession = Depends(get_db)):
+async def bulk_update_agents(
+    body: dict, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     """Bulk enable/disable agents."""
     agent_ids = body.get("agent_ids", [])
     updates = body.get("updates", {})
@@ -103,7 +118,9 @@ async def bulk_update_agents(body: dict, db: AsyncSession = Depends(get_db)):
 
     count = 0
     for aid in agent_ids:
-        result = await db.execute(select(Agent).where(Agent.id == aid))
+        result = await db.execute(
+            select(Agent).where(Agent.id == aid, Agent.tenant_id == tenant_id)
+        )
         agent = result.scalar_one_or_none()
         if agent:
             for key, value in safe_updates.items():
@@ -114,9 +131,11 @@ async def bulk_update_agents(body: dict, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{agent_id}/export")
-async def export_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
+async def export_agent(
+    agent_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     """Export agent configuration as JSON."""
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -151,7 +170,9 @@ async def export_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/import")
-async def import_agent(body: dict, db: AsyncSession = Depends(get_db)):
+async def import_agent(
+    body: dict, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     """Import agent configuration from exported JSON."""
     name = body.get("name", "Imported Agent")
     if not name or not isinstance(name, str):
@@ -164,9 +185,9 @@ async def import_agent(body: dict, db: AsyncSession = Depends(get_db)):
         if st and st not in valid_skill_types:
             raise HTTPException(status_code=400, detail=f"Invalid skill_type: {st}")
 
-    # Check for duplicate name
+    # Check for duplicate name (tenant from the authenticated caller — never trust the body)
     existing = await db.execute(
-        select(Agent).where(Agent.name == name, Agent.tenant_id == body.get("tenant_id", "default"))
+        select(Agent).where(Agent.name == name, Agent.tenant_id == tenant_id)
     )
     if existing.scalar_one_or_none():
         name = f"{name} (imported)"
@@ -179,7 +200,7 @@ async def import_agent(body: dict, db: AsyncSession = Depends(get_db)):
         response_config=body.get("response_config"),
         risk_config=body.get("risk_config"),
         skill_routing_mode=body.get("skill_routing_mode", "conversational"),
-        tenant_id=body.get("tenant_id", "default"),
+        tenant_id=tenant_id,
     )
     db.add(agent)
     await db.flush()
@@ -204,9 +225,11 @@ async def import_agent(body: dict, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{agent_id}/clone")
-async def clone_agent(agent_id: str, db: AsyncSession = Depends(get_db)):
+async def clone_agent(
+    agent_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     """Clone an agent with all its skills."""
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    result = await db.execute(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
     original = result.scalar_one_or_none()
     if not original:
         raise HTTPException(status_code=404, detail="Agent not found")

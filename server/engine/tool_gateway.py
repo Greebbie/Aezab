@@ -102,8 +102,17 @@ class ToolGateway:
         )
         return result.scalar_one_or_none()
 
-    async def invoke(self, tool_id: str, input_data: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Invoke a tool by id. Handles auth, retry, timeout."""
+    async def invoke(
+        self,
+        tool_id: str,
+        input_data: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Invoke a tool by id. Handles auth, retry, timeout.
+
+        `extra_headers` (e.g. an idempotency key) is only applied to HTTP
+        tool calls; in-process mock/function tools ignore it.
+        """
         tool = await self.get_tool(tool_id)
         if tool is None:
             raise ToolInvocationError(tool_id, "Tool not found or disabled", recoverable=False)
@@ -113,7 +122,7 @@ class ToolGateway:
 
         for attempt in range(tool.max_retries + 1):
             try:
-                result = await self._call(tool, input_data or {})
+                result = await self._call(tool, input_data or {}, extra_headers=extra_headers)
                 latency = (time.perf_counter() - t0) * 1000
 
                 if self.audit:
@@ -153,7 +162,12 @@ class ToolGateway:
             )
         raise ToolInvocationError(tool.name, f"Failed after {tool.max_retries + 1} attempts: {last_error}")
 
-    async def _call(self, tool: ToolDefinition, input_data: dict[str, Any]) -> dict[str, Any]:
+    async def _call(
+        self,
+        tool: ToolDefinition,
+        input_data: dict[str, Any],
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         """Execute a single tool call — dispatches to in-process mock, or HTTP."""
         schema_error = self._validate_input_schema(
             getattr(tool, "input_schema", None),
@@ -168,7 +182,7 @@ class ToolGateway:
             return await handler(input_data)
 
         # 2. HTTP tools (api, webhook, rpc, or function with custom endpoint)
-        return await self._call_http_tool(tool, input_data)
+        return await self._call_http_tool(tool, input_data, extra_headers=extra_headers)
 
     def _get_mock_handler(self, tool: ToolDefinition):
         """Resolve a tool to a direct in-process handler if it matches a mock tool."""
@@ -277,7 +291,12 @@ class ToolGateway:
         host = urlparse(url).hostname or ""
         return host in ("localhost", "127.0.0.1", "::1")
 
-    async def _call_http_tool(self, tool: ToolDefinition, input_data: dict[str, Any]) -> dict[str, Any]:
+    async def _call_http_tool(
+        self,
+        tool: ToolDefinition,
+        input_data: dict[str, Any],
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         """Execute an HTTP tool call."""
         if not tool.endpoint:
             raise ToolInvocationError(tool.name, "No endpoint configured for HTTP tool", recoverable=False)
@@ -297,6 +316,9 @@ class ToolGateway:
             elif auth_type == "api_key":
                 key_name = tool.auth_config.get("header", "X-API-Key")
                 headers[key_name] = tool.auth_config.get("token", "")
+
+        if extra_headers:
+            headers.update(extra_headers)
 
         timeout = tool.timeout_ms / 1000
         # Bypass env proxy for loopback calls (avoids SOCKS5/HTTP proxy interfering)

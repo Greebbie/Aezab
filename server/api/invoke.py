@@ -6,12 +6,15 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.config import settings
 from server.db import get_db
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, get_tenant_id
+from server.models.agent import Agent
 from server.exceptions import (
     AezabError,
     LLMError,
@@ -28,19 +31,50 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 logger = logging.getLogger(__name__)
 
 
+async def _check_agent_tenant(db: AsyncSession, agent_id: str, tenant_id: str) -> None:
+    """404 if the agent exists but belongs to another tenant.
+
+    In HLAB_DISABLE_AUTH dev mode, ownership checks are bypassed entirely so
+    every agent remains reachable regardless of its tenant_id.
+    """
+    if settings.disable_auth:
+        return
+    result = await db.execute(select(Agent.tenant_id).where(Agent.id == agent_id))
+    row = result.scalar_one_or_none()
+    if row is not None and row != tenant_id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+
 @router.post("/invoke", response_model=InvokeResponse)
-async def invoke(req: InvokeRequest, db: AsyncSession = Depends(get_db)):
+async def invoke(
+    req: InvokeRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
     """Unified entry point: send a message to any configured agent.
 
     This is the single API that all client systems integrate with.
     Handles both QA (knowledge retrieval) and workflow (process execution) scenarios.
     """
+    await _check_agent_tenant(db, req.agent_id, tenant_id)
     runtime = AgentRuntime(db)
-    return await runtime.invoke(req)
+    try:
+        return await asyncio.wait_for(
+            runtime.invoke(req), timeout=settings.pipeline_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="请求处理超时，请稍后重试。",
+        )
 
 
 @router.post("/invoke/stream")
-async def invoke_stream(req: InvokeRequest, db: AsyncSession = Depends(get_db)):
+async def invoke_stream(
+    req: InvokeRequest,
+    db: AsyncSession = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
     """SSE streaming entry point: same logic as /invoke, with real-time progress events.
 
     Emits Server-Sent Events:
@@ -59,6 +93,8 @@ async def invoke_stream(req: InvokeRequest, db: AsyncSession = Depends(get_db)):
     async def _run_pipeline() -> None:
         """Execute the agent pipeline and push SSE events onto the queue."""
         try:
+            await _check_agent_tenant(db, req.agent_id, tenant_id)
+
             # Signal that processing has started
             await queue.put(_sse_event("status", {"stage": "processing"}))
 
@@ -67,8 +103,19 @@ async def invoke_stream(req: InvokeRequest, db: AsyncSession = Depends(get_db)):
             # Signal retrieval phase
             await queue.put(_sse_event("status", {"stage": "retrieval"}))
 
-            # Run the full orchestration pipeline
-            response: InvokeResponse = await runtime.invoke(req)
+            # Run the full orchestration pipeline (bounded by the global timeout)
+            try:
+                response: InvokeResponse = await asyncio.wait_for(
+                    runtime.invoke(req), timeout=settings.pipeline_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                logger.error("SSE pipeline timed out after %ss", settings.pipeline_timeout_seconds)
+                await queue.put(_sse_event("error", {
+                    "detail": "pipeline timeout",
+                    "error_type": "timeout",
+                    "error_msg": "请求处理超时，请稍后重试。",
+                }))
+                return
 
             # Emit the final answer
             await queue.put(_sse_event("answer", {"content": response.short_answer}))
@@ -136,6 +183,13 @@ async def invoke_stream(req: InvokeRequest, db: AsyncSession = Depends(get_db)):
                 "detail": str(exc),
                 "error_type": "platform",
                 "error_msg": exc.message,
+            }))
+        except HTTPException as exc:
+            logger.warning("SSE pipeline rejected: %s", exc.detail)
+            await queue.put(_sse_event("error", {
+                "detail": str(exc.detail),
+                "error_type": "not_found" if exc.status_code == 404 else "request",
+                "error_msg": str(exc.detail),
             }))
         except Exception as exc:
             logger.error("SSE pipeline unexpected error: %s", exc, exc_info=True)

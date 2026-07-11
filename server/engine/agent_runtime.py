@@ -32,6 +32,9 @@ from server.schemas.invoke import (
     WorkflowCard,
 )
 from server.engine.llm_adapter import LLMMessage, get_llm_adapter_for_agent
+from server.engine.context_budget import (
+    MAX_INPUT_TOKENS, MAX_TOOL_RESULT_TOKENS, trim_messages, truncate_text,
+)
 from server.engine.knowledge_retriever import KnowledgeRetriever
 from server.engine.tool_gateway import ToolGateway
 from server.engine.workflow_executor import WorkflowExecutor
@@ -94,6 +97,23 @@ _REFUSAL_PHRASES = [
 ]
 
 
+def _apply_refusal_supplement(
+    answer: str, citations: list[Citation],
+) -> tuple[str, bool]:
+    """If the answer is a refusal but retrieval found data, append the top
+    snippet as a clearly-labeled reference instead of silently replacing
+    the answer. Returns (answer, was_supplemented)."""
+    if not citations or not any(p in answer for p in _REFUSAL_PHRASES):
+        return answer, False
+    snippet = next((c.content_snippet for c in citations if c.content_snippet), None)
+    if not snippet:
+        return answer, False
+    supplemented = (
+        f"{answer}\n\n---\n以下是检索到的可能相关的资料片段，供参考：\n{snippet}"
+    )
+    return supplemented, True
+
+
 # ── Workflow exit keywords ─────────────────────────────────────
 
 _WORKFLOW_EXIT_KEYWORDS = {
@@ -113,6 +133,10 @@ _WORKFLOW_EXIT_INTENT_KEYWORDS = {
     "do not continue", "don't continue", "stop workflow", "end workflow",
     "back to chat", "cancel workflow",
 }
+
+_WORKFLOW_RETRY_KEYWORDS = {"重试", "重新提交", "再试一次", "retry"}
+
+_WORKFLOW_RESUME_KEYWORDS = {"继续", "resume"}
 
 _WORKFLOW_EXIT_NEGATION_PHRASES = {
     "不要取消", "别取消", "不取消", "不是取消", "不要退出", "别退出",
@@ -152,6 +176,31 @@ def _is_workflow_exit_intent(message: str) -> bool:
     return any(marker in text for marker in rejection_markers) and any(
         obj in text for obj in workflow_objects
     )
+
+
+_FIELD_VALUE_PATTERN = re.compile(
+    r"^[\w@.+\-]+$|^\d[\d\-/: ]*\d$|^[一-鿿]{1,12}$"
+)
+
+
+def _looks_like_plain_field_value(message: str) -> bool:
+    """Heuristic: does this message look like a raw field value (phone
+    number, email, date, a short name) rather than a full sentence that
+    could plausibly (but ambiguously) express workflow intent?
+
+    Used only to decide whether spending an LLM call on exit-intent
+    classification is worthwhile — never used for validation itself.
+    """
+    text = (message or "").strip()
+    if not text:
+        return False
+    # Anything containing whitespace or typical sentence punctuation reads
+    # as free-form natural language, not a single field value. (ASCII '.'
+    # is deliberately excluded from this list — it's common in emails and
+    # decimals, not just sentence-ending punctuation.)
+    if any(ch in text for ch in " \t，。？！,?!~；;"):
+        return False
+    return bool(_FIELD_VALUE_PATTERN.match(text))
 
 
 def _parse_workflow_exit_decision(content: str) -> bool | None:
@@ -405,20 +454,24 @@ class AgentRuntime:
         audit = AuditLogger(self.db, trace_id, session.id, agent.id, agent.tenant_id)
         audit.log("user_input", event_data={"message": req.message, "form_data": req.form_data})
 
-        # 4. Risk pre-check
-        risk_block = self._risk_precheck(agent, req.message)
-        if risk_block:
-            audit.log("risk_block", event_data={"reason": risk_block})
-            await audit.flush()
-            return InvokeResponse(
-                session_id=session.id,
-                trace_id=trace_id,
-                short_answer=risk_block,
-                suggested_followups=["换个问题试试？"],
-            )
+        try:
+            # 4. Risk pre-check
+            risk_block = self._risk_precheck(agent, req.message)
+            if risk_block:
+                audit.log("risk_block", event_data={"reason": risk_block})
+                return InvokeResponse(
+                    session_id=session.id,
+                    trace_id=trace_id,
+                    short_answer=risk_block,
+                    suggested_followups=["换个问题试试？"],
+                )
 
-        # 5. Conversational pipeline
-        return await self._invoke_conversational(agent, session, req, trace_id, audit)
+            # 5. Conversational pipeline
+            return await self._invoke_conversational(agent, session, req, trace_id, audit)
+        finally:
+            # Audit must survive unhandled pipeline exceptions; flush() writes
+            # via an independent session and is a no-op when already flushed.
+            await audit.flush()
 
     # ── Conversational invocation ─────────────────────────────
 
@@ -438,7 +491,9 @@ class AgentRuntime:
             wf_state = {}
 
         # ── Fast-path: Active workflow bypass ──
-        if wf_state.get("status") in ("in_progress", "waiting_input"):
+        if wf_state.get("status") in (
+            "in_progress", "waiting_input", "await_retry", "paused_for_review",
+        ):
             if await self._should_exit_active_workflow(agent, req, audit):
                 return await self._cancel_active_workflow(
                     agent, session, req, trace_id, audit,
@@ -553,6 +608,7 @@ class AgentRuntime:
 
         for round_idx in range(MAX_TOOL_ROUNDS):
             audit.start_timer(f"llm_round_{round_idx}")
+            messages = trim_messages(messages, MAX_INPUT_TOKENS)
 
             try:
                 if tool_defs:
@@ -672,7 +728,7 @@ class AgentRuntime:
 
                 messages.append(LLMMessage(
                     role="tool",
-                    content=result.text,
+                    content=truncate_text(result.text, MAX_TOOL_RESULT_TOKENS),
                     tool_call_id=tc.id,
                 ))
                 if result.text:
@@ -714,12 +770,12 @@ class AgentRuntime:
             else:
                 short_answer = "抱歉，未能获取到有效回复，请重试。"
 
-        # Safety net: refusal override when retrieval found data
-        if collected_citations and any(p in short_answer for p in _REFUSAL_PHRASES):
-            for c in collected_citations:
-                if c.content_snippet:
-                    short_answer = c.content_snippet
-                    break
+        # Refusal + citations: append labeled reference, never silently replace
+        short_answer, refusal_supplemented = _apply_refusal_supplement(
+            short_answer, collected_citations,
+        )
+        if refusal_supplemented:
+            audit.log("refusal_supplement", event_data={"citations": len(collected_citations)})
 
         user_facing_citations = _compact_citations(collected_citations)
 
@@ -753,6 +809,9 @@ class AgentRuntime:
             metadata["tool_calls"] = tool_calls_log
         if fallback_info:
             metadata["fallback"] = fallback_info
+            metadata["degraded"] = True
+        if refusal_supplemented:
+            metadata["refusal_supplemented"] = True
 
         return InvokeResponse(
             session_id=session.id,
@@ -1066,7 +1125,7 @@ class AgentRuntime:
             parts = []
             citations = []
             for i, hit in enumerate(retrieval.hits[:5]):
-                parts.append(f"[{i+1}] {hit.content}")
+                parts.append(f"[{i+1}] {truncate_text(hit.content, 800)}")
                 citations.append(Citation(
                     source_id=hit.source_id or "",
                     source_name=hit.source_name or f"来源{i+1}",
@@ -1092,6 +1151,7 @@ class AgentRuntime:
             try:
                 result = await tool_gw.invoke(tool_def.id, args)
                 text = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
+                text = truncate_text(text, MAX_TOOL_RESULT_TOKENS)
                 return SkillToolResult(text=text)
             except Exception as e:
                 return SkillToolResult(text=f"工具调用失败: {e}")
@@ -1109,9 +1169,17 @@ class AgentRuntime:
                 "workflow_id": workflow_id,
                 "current_step_index": 0,
                 "status": "in_progress",
+                # One idempotency key per workflow run; tool_call and the
+                # complete-step webhook both forward it so retried
+                # submissions can be deduplicated by the receiving end.
+                "idempotency_key": str(uuid.uuid4()),
             }
             flag_modified(session, "workflow_state")
             session.active_skill_id = skill.id
+            # Hygiene: never let a previous ticket's collected data bleed
+            # into this new workflow run.
+            session.collected_data = {}
+            flag_modified(session, "collected_data")
 
             tool_gw = ToolGateway(self.db, audit)
             executor = WorkflowExecutor(self.db, tool_gw, audit)
@@ -1439,15 +1507,35 @@ class AgentRuntime:
     ) -> bool:
         """Classify whether an active workflow turn means cancellation.
 
-        Form submissions stay deterministic and bypass this LLM classifier. For
-        natural-language turns we ask the agent's configured model, then fall
-        back to local intent rules if the model is unavailable.
+        Form submissions stay deterministic and bypass classification
+        entirely. For natural-language turns, the local keyword/negation
+        check runs FIRST and decides the vast majority of turns (most
+        messages during an active workflow are just field data — phone
+        numbers, names, dates — with zero ambiguity). The LLM is only
+        called as a narrow fallback when the local check is inconclusive
+        (no keyword/negation match) AND the message doesn't look like a
+        plain field value, i.e. genuinely ambiguous free-form text.
         """
         if req.form_data:
             return False
 
         message = (req.message or "").strip()
         if not message:
+            return False
+
+        local_decision = _is_workflow_exit_intent(message)
+        if local_decision:
+            audit.log(
+                "workflow_turn_intent",
+                event_data={"message": message, "source": "local_keyword", "exit": True},
+            )
+            return True
+
+        if _looks_like_plain_field_value(message):
+            audit.log(
+                "workflow_turn_intent",
+                event_data={"message": message, "source": "local_field_data", "exit": False},
+            )
             return False
 
         prompt = (
@@ -1509,6 +1597,63 @@ class AgentRuntime:
         req: InvokeRequest, trace_id: str, audit: AuditLogger,
     ) -> InvokeResponse:
         """Continue an active workflow (bypass LLM routing)."""
+        wf_state = session.workflow_state or {}
+
+        # ── paused_for_review: waiting on a human reviewer ──
+        # Exit intent was already handled by the caller before we got here.
+        # A "继续"/"resume" message advances past the human_review step
+        # (MVP — no external approval API this wave); anything else just
+        # gets a canned "already escalated" reply.
+        if wf_state.get("status") == "paused_for_review":
+            message = (req.message or "").strip().lower()
+            if any(kw in message for kw in _WORKFLOW_RESUME_KEYWORDS):
+                tool_gw = ToolGateway(self.db, audit)
+                executor = WorkflowExecutor(self.db, tool_gw, audit)
+                audit.start_timer("workflow")
+                result = await executor.resume_after_review(session)
+                wf_latency = audit.elapsed_ms("workflow")
+                audit.log("workflow_step", workflow_meta={
+                    "status": result.status, "message": result.message,
+                }, latency_ms=wf_latency)
+                return await self._finalize_workflow_turn(session, req, trace_id, audit, result)
+
+            canned = '已转人工处理，处理完成后可回复"继续"恢复流程。'
+            await self._save_message(session.id, "user", req.message, trace_id)
+            await self._save_message(session.id, "assistant", canned, trace_id)
+            await self._save_session(session)
+            await audit.flush()
+            return InvokeResponse(
+                session_id=session.id,
+                trace_id=trace_id,
+                short_answer=canned,
+                workflow_status="paused_for_review",
+                escalated=True,
+                suggested_followups=["继续"],
+            )
+
+        # ── await_retry: last submission failed after retries ──
+        # Only a retry-intent message should re-run the webhook; anything
+        # else just re-prompts (never re-hits the webhook for an unrelated
+        # message).
+        if wf_state.get("status") == "await_retry":
+            message = (req.message or "").strip().lower()
+            if not any(kw in message for kw in _WORKFLOW_RETRY_KEYWORDS):
+                reprompt = '提交尚未成功，回复"重试"重新提交，或"取消"放弃。'
+                await self._save_message(session.id, "user", req.message, trace_id)
+                await self._save_message(session.id, "assistant", reprompt, trace_id)
+                await self._save_session(session)
+                await audit.flush()
+                return InvokeResponse(
+                    session_id=session.id,
+                    trace_id=trace_id,
+                    short_answer=reprompt,
+                    workflow_status="await_retry",
+                    suggested_followups=["重试", "取消"],
+                )
+            # Retry intent confirmed — fall through to re-run process_step,
+            # which re-executes the (unchanged) current step: the complete
+            # step's webhook, reusing the same idempotency key.
+
         tool_gw = ToolGateway(self.db, audit)
         executor = WorkflowExecutor(self.db, tool_gw, audit)
 
@@ -1521,11 +1666,28 @@ class AgentRuntime:
             "message": result.message,
         }, latency_ms=wf_latency)
 
-        if result.status in ("completed", "cancelled", "escalated"):
+        return await self._finalize_workflow_turn(session, req, trace_id, audit, result)
+
+    async def _finalize_workflow_turn(
+        self, session: ConversationSession, req: InvokeRequest,
+        trace_id: str, audit: AuditLogger, result,
+    ) -> InvokeResponse:
+        """Shared tail for a workflow turn: terminal cleanup, persistence,
+        followups. Only "completed"/"cancelled" are terminal — "escalated"
+        (paused_for_review / hard tool-call escalation) and "await_retry"
+        are handled by the step handlers themselves (see
+        WorkflowExecutor._handle_human_review / _handle_tool_call /
+        _handle_complete), which is why they are intentionally excluded
+        here (W1-T4).
+        """
+        if result.status in ("completed", "cancelled"):
             session.active_skill_id = None
             # Set to None — SQLAlchemy reliably detects NULL vs dict change
             session.workflow_state = None
             flag_modified(session, "workflow_state")
+            # Hygiene: no cross-ticket bleed into a future workflow (W1-T5).
+            session.collected_data = {}
+            flag_modified(session, "collected_data")
 
         await self._save_message(session.id, "user", req.message, trace_id)
         await self._save_message(session.id, "assistant", result.message, trace_id)
@@ -1683,6 +1845,7 @@ class AgentRuntime:
     async def _get_or_create_session(
         self, req: InvokeRequest, agent: Agent,
     ) -> ConversationSession:
+        new_session_id = req.session_id or str(uuid.uuid4())
         if req.session_id:
             result = await self.db.execute(
                 select(ConversationSession).where(
@@ -1690,11 +1853,27 @@ class AgentRuntime:
                 )
             )
             session = result.scalar_one_or_none()
-            if session:
-                return session
+            if session is not None:
+                if (
+                    session.agent_id == agent.id
+                    and session.tenant_id == agent.tenant_id
+                    and session.user_id == req.user_id
+                ):
+                    return session
+                # Session id exists but belongs to another agent/tenant/user:
+                # never resume it — start a fresh session under a new id.
+                # (Delegation always passes session_id=None, so it never
+                # reaches this branch; req.user_id defaults to "anonymous"
+                # for unauthenticated callers, and two "anonymous" callers
+                # resuming the same session is allowed by design.)
+                logger.warning(
+                    "Session %s does not belong to agent %s / user; creating a new session",
+                    req.session_id, agent.id,
+                )
+                new_session_id = str(uuid.uuid4())
 
         session = ConversationSession(
-            id=req.session_id or str(uuid.uuid4()),
+            id=new_session_id,
             agent_id=agent.id,
             user_id=req.user_id,
             tenant_id=agent.tenant_id,

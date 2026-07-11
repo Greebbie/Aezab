@@ -7,17 +7,35 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import get_db
+from server.models.agent import Agent
 from server.models.agent_skill import AgentSkill
 from server.models.skill import Skill
 from server.schemas.skill import AgentSkillCreate, AgentSkillOut
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, get_tenant_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
+async def _get_owned_agent(agent_id: str, tenant_id: str, db: AsyncSession) -> Agent:
+    """Fetch an agent, scoped to the caller's tenant, or raise 404."""
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    return agent
+
+
 @router.get("/{agent_id}/skills", response_model=list[AgentSkillOut])
-async def list_agent_skills(agent_id: str, db: AsyncSession = Depends(get_db)):
+async def list_agent_skills(
+    agent_id: str,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
     """List all skills bound to an agent, enriched with skill metadata."""
+    await _get_owned_agent(agent_id, tenant_id, db)
+
     result = await db.execute(
         select(AgentSkill).where(AgentSkill.agent_id == agent_id)
     )
@@ -52,10 +70,19 @@ async def list_agent_skills(agent_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{agent_id}/skills", response_model=AgentSkillOut, status_code=201)
-async def bind_skill(agent_id: str, body: AgentSkillCreate, db: AsyncSession = Depends(get_db)):
+async def bind_skill(
+    agent_id: str,
+    body: AgentSkillCreate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
     """Bind a skill to an agent."""
-    # Check skill exists
-    result = await db.execute(select(Skill).where(Skill.id == body.skill_id))
+    await _get_owned_agent(agent_id, tenant_id, db)
+
+    # Check skill exists and belongs to the caller's tenant
+    result = await db.execute(
+        select(Skill).where(Skill.id == body.skill_id, Skill.tenant_id == tenant_id)
+    )
     skill = result.scalar_one_or_none()
     if not skill:
         raise HTTPException(404, "Skill not found")
@@ -96,8 +123,15 @@ async def bind_skill(agent_id: str, body: AgentSkillCreate, db: AsyncSession = D
 
 
 @router.delete("/{agent_id}/skills/{binding_id}", status_code=204)
-async def unbind_skill(agent_id: str, binding_id: str, db: AsyncSession = Depends(get_db)):
+async def unbind_skill(
+    agent_id: str,
+    binding_id: str,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
     """Remove a skill binding from an agent."""
+    await _get_owned_agent(agent_id, tenant_id, db)
+
     result = await db.execute(
         select(AgentSkill).where(
             AgentSkill.id == binding_id,

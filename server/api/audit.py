@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import get_db
 from server.models.audit import AuditTrace
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, get_tenant_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -18,11 +18,13 @@ RETRIEVAL_EVENT_TYPES = ("retrieval", "pre_retrieval")
 
 
 @router.get("/traces/{trace_id}")
-async def get_trace(trace_id: str, db: AsyncSession = Depends(get_db)):
+async def get_trace(
+    trace_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     """Get all events for a trace — full pipeline replay."""
     result = await db.execute(
         select(AuditTrace)
-        .where(AuditTrace.trace_id == trace_id)
+        .where(AuditTrace.trace_id == trace_id, AuditTrace.tenant_id == tenant_id)
         .order_by(AuditTrace.timestamp)
     )
     traces = result.scalars().all()
@@ -47,11 +49,13 @@ async def get_trace(trace_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/sessions/{session_id}/traces")
-async def get_session_traces(session_id: str, db: AsyncSession = Depends(get_db)):
+async def get_session_traces(
+    session_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     """Get all traces for a session — conversation replay."""
     result = await db.execute(
         select(AuditTrace)
-        .where(AuditTrace.session_id == session_id)
+        .where(AuditTrace.session_id == session_id, AuditTrace.tenant_id == tenant_id)
         .order_by(AuditTrace.timestamp)
     )
     traces = result.scalars().all()
@@ -70,7 +74,7 @@ async def get_session_traces(session_id: str, db: AsyncSession = Depends(get_db)
 
 @router.get("/traces")
 async def list_traces(
-    tenant_id: str = "default",
+    tenant_id: str = Depends(get_tenant_id),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     event_type: str | None = None,
@@ -117,7 +121,7 @@ async def list_traces(
 
 @router.get("/metrics")
 async def get_metrics(
-    tenant_id: str = "default",
+    tenant_id: str = Depends(get_tenant_id),
     hours: int = Query(default=24, ge=1, le=720),
     db: AsyncSession = Depends(get_db),
 ):

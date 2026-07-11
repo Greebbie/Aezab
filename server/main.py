@@ -9,7 +9,9 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from typing import Any
+
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -21,16 +23,19 @@ from server.api.agents import router as agents_router
 from server.api.asr import router as asr_router
 from server.api.audit import router as audit_router
 from server.api.auth import router as auth_router
+from server.api.files import router as files_router
 from server.api.invoke import router as invoke_router
 from server.api.knowledge import router as knowledge_router
 from server.api.llm_configs import router as llm_configs_router
 from server.api.mock_tools import router as mock_tools_router
 from server.api.performance import router as performance_router
+from server.api.sessions import router as sessions_router
 from server.api.skills import router as skills_router
 from server.api.tools import router as tools_router
 from server.api.vector_admin import router as vector_admin_router
 from server.api.workflows import router as workflows_router
 from server.config import settings
+from server.middleware.auth import enforce_rate_limit, require_scope
 
 logger = logging.getLogger(__name__)
 
@@ -83,12 +88,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+def _resolve_cors_settings(cors_origins: str) -> dict[str, Any]:
+    """Compute allow_origins/allow_credentials for CORSMiddleware.
+
+    allow_origins=["*"] combined with allow_credentials=True is invalid per
+    the Fetch/CORS spec — browsers reject that exact combination outright —
+    yet it was the previous hardcoded default whenever cors_origins was left
+    at its wildcard default. Force credentials off in that case; an explicit
+    origin list keeps credentials enabled as before.
+    """
+    if cors_origins == "*":
+        return {"allow_origins": ["*"], "allow_credentials": False}
+    return {"allow_origins": cors_origins.split(","), "allow_credentials": True}
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins.split(",") if settings.cors_origins != "*" else ["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    **_resolve_cors_settings(settings.cors_origins),
 )
 
 
@@ -108,22 +126,30 @@ app.add_middleware(RequestIDMiddleware)
 
 prefix = settings.api_prefix
 
-app.include_router(invoke_router, prefix=prefix, tags=["invoke"])
+# Scope/rate-limit gates are applied here (router-include level) rather
+# than inside individual api/*.py modules, so those files stay untouched.
+# See server/middleware/auth.py: require_scope, enforce_rate_limit.
+_invoke_deps = [Depends(require_scope("invoke")), Depends(enforce_rate_limit)]
+_manage_deps = [Depends(require_scope("manage"))]
+
+app.include_router(invoke_router, prefix=prefix, tags=["invoke"], dependencies=_invoke_deps)
 app.include_router(asr_router, prefix=prefix + "/asr", tags=["asr"])
-app.include_router(agents_router, prefix=prefix + "/agents", tags=["agents"])
-app.include_router(workflows_router, prefix=prefix + "/workflows", tags=["workflows"])
-app.include_router(knowledge_router, prefix=prefix + "/knowledge", tags=["knowledge"])
-app.include_router(tools_router, prefix=prefix + "/tools", tags=["tools"])
+app.include_router(agents_router, prefix=prefix + "/agents", tags=["agents"], dependencies=_manage_deps)
+app.include_router(workflows_router, prefix=prefix + "/workflows", tags=["workflows"], dependencies=_manage_deps)
+app.include_router(knowledge_router, prefix=prefix + "/knowledge", tags=["knowledge"], dependencies=_manage_deps)
+app.include_router(tools_router, prefix=prefix + "/tools", tags=["tools"], dependencies=_manage_deps)
 app.include_router(audit_router, prefix=prefix + "/audit", tags=["audit"])
 app.include_router(mock_tools_router, prefix=prefix + "/mock-tools", tags=["mock-tools"])
-app.include_router(llm_configs_router, prefix=prefix + "/llm-configs", tags=["llm-configs"])
+app.include_router(llm_configs_router, prefix=prefix + "/llm-configs", tags=["llm-configs"], dependencies=_manage_deps)
 app.include_router(performance_router, prefix=prefix + "/performance", tags=["performance"])
 app.include_router(vector_admin_router, prefix=prefix + "/vector-admin", tags=["vector-admin"])
-app.include_router(skills_router, prefix=prefix + "/skills", tags=["skills"])
-app.include_router(agent_skills_router, prefix=prefix + "/agents", tags=["agent-skills"])
-app.include_router(agent_connections_router, prefix=prefix + "/agent-connections", tags=["agent-connections"])
-app.include_router(agent_capabilities_router, prefix=prefix + "/agents", tags=["agent-capabilities"])
+app.include_router(skills_router, prefix=prefix + "/skills", tags=["skills"], dependencies=_manage_deps)
+app.include_router(agent_skills_router, prefix=prefix + "/agents", tags=["agent-skills"], dependencies=_manage_deps)
+app.include_router(agent_connections_router, prefix=prefix + "/agent-connections", tags=["agent-connections"], dependencies=_manage_deps)
+app.include_router(agent_capabilities_router, prefix=prefix + "/agents", tags=["agent-capabilities"], dependencies=_manage_deps)
 app.include_router(auth_router, prefix=prefix + "/auth", tags=["auth"])
+app.include_router(sessions_router, prefix=prefix + "/sessions", tags=["sessions"])
+app.include_router(files_router, prefix=prefix + "/files", tags=["files"])
 
 
 @app.get("/health")

@@ -15,6 +15,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+import threading
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -304,3 +307,106 @@ def get_tenant_id(
     This replaces trusting tenant_id from the request body.
     """
     return current_user.get("tenant_id", "default")
+
+
+# ── API key scope enforcement ───────────────────────────────────
+#
+# Only API-key-authenticated callers carry "api_key_scopes" (see
+# get_current_user's X-API-Key branch above). JWT-authenticated console
+# users never carry that key and are therefore never restricted here.
+
+
+def require_scope(scope: str):
+    """Dependency factory: require `scope` among the caller's API key scopes.
+
+    Semantics: if the caller authenticated via API key AND that key's
+    `scopes` list is non-empty, `scope` must be present in it or the request
+    is rejected with 403. An empty list or None scopes means "unrestricted"
+    (backward compatible with API keys created before scopes existed).
+    JWT-authenticated console users (no `api_key_scopes` entry at all) are
+    unaffected regardless of this dependency.
+
+    Usage — applied at router-include level so no individual API module has
+    to be edited:
+        app.include_router(agents_router, ..., dependencies=[Depends(require_scope("manage"))])
+    """
+
+    async def _check_scope(
+        current_user: dict[str, Any] = Depends(get_current_user),
+    ) -> dict[str, Any]:
+        scopes = current_user.get("api_key_scopes")
+        if scopes and scope not in scopes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"API key is missing required scope: '{scope}'",
+            )
+        return current_user
+
+    return _check_scope
+
+
+# ── In-process rate limiting ────────────────────────────────────
+#
+# Simple sliding-window limiter keyed by api_key_id, falling back to user id,
+# falling back to client IP. State lives in this process's memory only — in
+# a multi-worker or multi-instance deployment each process enforces its own
+# independent limit (no shared/Redis-backed counter). That is an accepted
+# tradeoff for this wave; move to Redis if a globally consistent limit is
+# ever required.
+
+_RATE_LIMIT_WINDOW_SECONDS = 60.0
+_rate_limit_lock = threading.Lock()
+_rate_limit_windows: dict[str, deque] = defaultdict(deque)
+
+
+def _rate_limit_key(request: Request, current_user: dict[str, Any]) -> str:
+    api_key_id = current_user.get("api_key_id")
+    if api_key_id:
+        return f"key:{api_key_id}"
+    user_id = current_user.get("id")
+    if user_id:
+        return f"user:{user_id}"
+    client_host = request.client.host if request.client else "unknown"
+    return f"ip:{client_host}"
+
+
+async def enforce_rate_limit(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> None:
+    """Per-process sliding-window rate limit, applied only to /invoke routes.
+
+    Wired at router-include level in server/main.py:
+        app.include_router(invoke_router, ..., dependencies=[Depends(enforce_rate_limit)])
+    """
+    limit = settings.rate_limit_per_minute
+    if limit <= 0:
+        return  # 0 or negative disables rate limiting entirely
+
+    key = _rate_limit_key(request, current_user)
+    now = time.monotonic()
+
+    with _rate_limit_lock:
+        window = _rate_limit_windows[key]
+        while window and now - window[0] > _RATE_LIMIT_WINDOW_SECONDS:
+            window.popleft()
+
+        # Opportunistic purge: drop other keys whose windows have gone idle,
+        # so the dict does not grow unboundedly with one-off callers/IPs.
+        stale = [
+            k for k, w in _rate_limit_windows.items()
+            if k != key and (not w or now - w[-1] > _RATE_LIMIT_WINDOW_SECONDS)
+        ]
+        for k in stale:
+            del _rate_limit_windows[k]
+
+        if len(window) >= limit:
+            oldest = window[0]
+            retry_after = max(1, int(_RATE_LIMIT_WINDOW_SECONDS - (now - oldest)) + 1)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Rate limit exceeded. Please slow down.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        window.append(now)

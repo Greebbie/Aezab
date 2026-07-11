@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import get_db
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, get_tenant_id
 from server.models.llm_config import LLMConfig
 
 logger = logging.getLogger(__name__)
@@ -156,13 +156,17 @@ async def get_templates():
 
 
 @router.get("/", response_model=list[LLMConfigOut])
-async def list_configs(tenant_id: str = "default", db: AsyncSession = Depends(get_db)):
+async def list_configs(tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(LLMConfig).where(LLMConfig.tenant_id == tenant_id))
     return result.scalars().all()
 
 
 @router.post("/", response_model=LLMConfigOut, status_code=201)
-async def create_config(body: LLMConfigCreate, db: AsyncSession = Depends(get_db)):
+async def create_config(
+    body: LLMConfigCreate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
     config = LLMConfig(
         name=body.name,
         provider=body.provider,
@@ -175,13 +179,13 @@ async def create_config(body: LLMConfigCreate, db: AsyncSession = Depends(get_db
         timeout_ms=body.timeout_ms,
         extra_params=body.extra_params,
         is_default=body.is_default,
-        tenant_id=body.tenant_id,
+        tenant_id=tenant_id,
     )
     # If this config is set as default, unset any existing defaults for the tenant
     if body.is_default:
         existing = await db.execute(
             select(LLMConfig).where(
-                LLMConfig.tenant_id == body.tenant_id,
+                LLMConfig.tenant_id == tenant_id,
                 LLMConfig.is_default == True,  # noqa: E712
             )
         )
@@ -195,8 +199,12 @@ async def create_config(body: LLMConfigCreate, db: AsyncSession = Depends(get_db
 
 
 @router.get("/{config_id}", response_model=LLMConfigOut)
-async def get_config(config_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMConfig).where(LLMConfig.id == config_id))
+async def get_config(
+    config_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(LLMConfig).where(LLMConfig.id == config_id, LLMConfig.tenant_id == tenant_id)
+    )
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(404, "LLM config not found")
@@ -204,8 +212,15 @@ async def get_config(config_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/{config_id}", response_model=LLMConfigOut)
-async def update_config(config_id: str, body: LLMConfigUpdate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMConfig).where(LLMConfig.id == config_id))
+async def update_config(
+    config_id: str,
+    body: LLMConfigUpdate,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(LLMConfig).where(LLMConfig.id == config_id, LLMConfig.tenant_id == tenant_id)
+    )
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(404, "LLM config not found")
@@ -233,8 +248,12 @@ async def update_config(config_id: str, body: LLMConfigUpdate, db: AsyncSession 
 
 
 @router.delete("/{config_id}", status_code=204)
-async def delete_config(config_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(LLMConfig).where(LLMConfig.id == config_id))
+async def delete_config(
+    config_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(LLMConfig).where(LLMConfig.id == config_id, LLMConfig.tenant_id == tenant_id)
+    )
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(404, "LLM config not found")
@@ -243,9 +262,13 @@ async def delete_config(config_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/set-default/{config_id}", response_model=LLMConfigOut)
-async def set_default(config_id: str, db: AsyncSession = Depends(get_db)):
+async def set_default(
+    config_id: str, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
+):
     """Set a config as the default, unsetting any existing default for the same tenant."""
-    result = await db.execute(select(LLMConfig).where(LLMConfig.id == config_id))
+    result = await db.execute(
+        select(LLMConfig).where(LLMConfig.id == config_id, LLMConfig.tenant_id == tenant_id)
+    )
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(404, "LLM config not found")

@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     llm_temperature: float = env_field(0.3, "LLM_TEMPERATURE")
     llm_max_tokens: int = env_field(2048, "LLM_MAX_TOKENS")
     llm_timeout: int = env_field(60, "LLM_TIMEOUT")  # Per-request LLM call timeout in seconds
+    pipeline_timeout_seconds: int = env_field(90, "PIPELINE_TIMEOUT_SECONDS")  # Global invoke pipeline timeout
 
     # Embedding
     embedding_provider: Literal["local", "dashscope", "openai_compatible"] = env_field(
@@ -47,6 +48,9 @@ class Settings(BaseSettings):
 
     # Knowledge upload
     knowledge_max_upload_mb: int = env_field(50, "KNOWLEDGE_MAX_UPLOAD_MB")
+
+    # Workflow file-field upload (server/api/files.py)
+    max_upload_mb: int = env_field(10, "MAX_UPLOAD_MB")
 
     # Speech-to-text / ASR
     asr_provider: Literal["dashscope_qwen", "funasr_http", "openai_compatible", "disabled"] = env_field(

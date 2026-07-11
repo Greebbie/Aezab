@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 import time
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.db import async_session
 from server.models.audit import AuditTrace
+
+logger = logging.getLogger(__name__)
 
 
 def new_trace_id() -> str:
@@ -65,9 +69,21 @@ class AuditLogger:
         self._events.append(trace)
 
     async def flush(self):
-        """Write all buffered events to DB."""
+        """Write all buffered events to DB.
+
+        Uses a dedicated session independent of the request's business
+        session (``self.db``), so that a failed/rolled-back business
+        transaction (e.g. PendingRollbackError from an earlier error in the
+        same request) never causes the audit trail for that request to be
+        lost. ``self.db`` is kept only for backward-compatible construction
+        and is intentionally not touched here.
+        """
         if not self._events:
             return
-        self.db.add_all(self._events)
-        await self.db.commit()
-        self._events.clear()
+        events, self._events = self._events, []
+        try:
+            async with async_session() as s:
+                s.add_all(events)
+                await s.commit()
+        except Exception:
+            logger.exception("audit flush failed; %d events dropped", len(events))

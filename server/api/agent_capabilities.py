@@ -16,7 +16,7 @@ from server.models.agent_skill import AgentSkill
 from server.models.knowledge import KnowledgeSource
 from server.models.tool import ToolDefinition
 from server.models.workflow import Workflow
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, get_tenant_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -124,9 +124,15 @@ def _skill_to_capability(skill: Skill) -> tuple[str, dict]:
 # ── GET capabilities ─────────────────────────────────
 
 @router.get("/{agent_id}/capabilities", response_model=CapabilitiesResponse)
-async def get_capabilities(agent_id: str, db: AsyncSession = Depends(get_db)):
-    # Verify agent exists
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+async def get_capabilities(
+    agent_id: str,
+    tenant_id: str = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    # Verify agent exists and belongs to the caller's tenant
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+    )
     if not result.scalar_one_or_none():
         raise HTTPException(404, "Agent not found")
 
@@ -150,10 +156,14 @@ async def get_capabilities(agent_id: str, db: AsyncSession = Depends(get_db)):
 async def update_capabilities(
     agent_id: str,
     body: CapabilitiesPayload,
+    tenant_id: str = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ):
-    # Verify agent exists and get name for auto-generated skill names
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    # Verify agent exists, belongs to the caller's tenant, and get name for
+    # auto-generated skill names
+    result = await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+    )
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(404, "Agent not found")
