@@ -193,6 +193,20 @@ class LLMAdapter:
             h["Authorization"] = f"Bearer {self.api_key}"
         return h
 
+    def _require_configured(self, model: str) -> None:
+        """Fail fast with a clear, classifiable error when no base_url is
+        set, instead of letting httpx raise an opaque "missing protocol"
+        error for a relative URL. Hit by fresh installs that haven't run
+        the setup wizard yet and have no AEZAB_LLM_BASE_URL fallback."""
+        if not self.base_url:
+            raise LLMError(
+                "LLM not configured: no base_url set. Configure a provider "
+                "via the console's first-run setup wizard or the LLM "
+                "Configs page.",
+                provider=self.base_url,
+                model=model,
+            )
+
     def _make_client(self, timeout: int | None = None) -> httpx.AsyncClient:
         """Create an httpx client, bypassing proxy for local endpoints."""
         t = timeout or self.timeout
@@ -275,6 +289,7 @@ class LLMAdapter:
         """
         t0 = time.perf_counter()
         model = kwargs.get("model", self.model)
+        self._require_configured(model)
         payload = {
             "model": model,
             "messages": self._serialize_messages(messages),
@@ -351,6 +366,7 @@ class LLMAdapter:
         """
         t0 = time.perf_counter()
         model = kwargs.get("model", self.model)
+        self._require_configured(model)
         # Wrap tools in OpenAI format if needed: [{"type": "function", "function": {...}}]
         formatted_tools = []
         for t in tools:
@@ -459,6 +475,7 @@ class LLMAdapter:
         """
         t0 = time.perf_counter()
         model = kwargs.get("model", self.model)
+        self._require_configured(model)
         payload: dict[str, Any] = {
             "model": model,
             "messages": self._serialize_messages(messages),

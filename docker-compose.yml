@@ -7,7 +7,6 @@ services:
     environment:
       - AEZAB_DATABASE_URL=${AEZAB_DATABASE_URL:-${HLAB_DATABASE_URL:-sqlite+aiosqlite:///./data/aezab.db}}
       - AEZAB_REDIS_URL=${AEZAB_REDIS_URL:-${HLAB_REDIS_URL:-redis://redis:6379/0}}
-      - AEZAB_LLM_BASE_URL=${AEZAB_LLM_BASE_URL:-${HLAB_LLM_BASE_URL:-http://ollama:11434/v1}}
       - AEZAB_HF_ENDPOINT=${AEZAB_HF_ENDPOINT:-${HLAB_HF_ENDPOINT:-https://hf-mirror.com}}
       - HF_ENDPOINT=${AEZAB_HF_ENDPOINT:-${HLAB_HF_ENDPOINT:-https://hf-mirror.com}}
     volumes:
@@ -15,7 +14,6 @@ services:
       - aezab-model-cache:/root/.cache/huggingface
     depends_on:
       - redis
-      - ollama
     restart: unless-stopped
     # Cap the container's json-file log on disk: unbounded logs are a
     # common cause of an unattended self-hosted install filling its disk
@@ -38,9 +36,15 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Local LLM via Ollama (CPU)
+  # Local LLM via Ollama (CPU) — OPT-IN. The recommended path for most
+  # deployments is to leave this disabled and connect a cloud model through
+  # the console's first-run setup wizard instead (no download, no local
+  # compute). If you want a fully offline local model, start this profile
+  # explicitly:
+  #   docker compose --profile local-llm up -d
   ollama:
     image: ollama/ollama:latest
+    profiles: ["local-llm"]
     ports:
       - "11434:11434"
     volumes:
@@ -55,11 +59,13 @@ services:
 
   # One-shot: pulls a small local model so the console has something to talk
   # to out of the box, with zero manual setup. Runs once and exits (restart:
-  # "no"). If you plan to use a cloud LLM instead (recommended — configure
-  # it from the console's first-run setup wizard), you can delete both the
-  # `ollama` and `ollama-init` services entirely.
+  # "no"). Only starts when the `local-llm` profile is active (see `ollama`
+  # comment above) — plain `docker compose up -d` never triggers this
+  # download. If you plan to use a cloud LLM instead (recommended), you can
+  # delete both the `ollama` and `ollama-init` services entirely.
   ollama-init:
     image: ollama/ollama:latest
+    profiles: ["local-llm"]
     depends_on:
       - ollama
     environment:

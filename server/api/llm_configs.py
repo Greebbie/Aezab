@@ -135,7 +135,7 @@ PROVIDER_TEMPLATES: dict[str, dict[str, Any]] = {
     "ollama": {
         "provider": "local",
         "base_url": "http://localhost:11434/v1",
-        "model": "qwen2.5",
+        "model": "qwen2.5:1.5b",
         "temperature": 0.3,
         "top_p": 1.0,
         "max_tokens": 2048,

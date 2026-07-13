@@ -583,7 +583,7 @@
       },
       "ollama": {
         "name": "Ollama（本地免费）",
-        "description": "跑在你自己的机器上，不需要密钥，也不用联网。"
+        "description": "跑在你自己的机器上，不需要密钥，也不用联网。用 docker compose --profile local-llm up -d 启动，或使用本地已安装的 Ollama。"
       },
       "custom": {
         "name": "自定义",

@@ -75,7 +75,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     fallback: {
       provider: 'local',
       base_url: 'http://localhost:11434/v1',
-      model: 'qwen2.5',
+      model: 'qwen2.5:1.5b',
     },
   },
   {

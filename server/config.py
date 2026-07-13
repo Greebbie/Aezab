@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     llm_provider: Literal["openai_compatible", "dashscope", "zhipu", "local"] = env_field(
         "openai_compatible", "LLM_PROVIDER"
     )
-    llm_base_url: str = env_field("http://localhost:11434/v1", "LLM_BASE_URL")
+    llm_base_url: str = env_field("", "LLM_BASE_URL")
     llm_api_key: str = env_field("", "LLM_API_KEY")
     llm_model: str = env_field("qwen-flash", "LLM_MODEL")
     llm_temperature: float = env_field(0.3, "LLM_TEMPERATURE")

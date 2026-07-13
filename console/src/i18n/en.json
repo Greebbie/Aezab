@@ -583,7 +583,7 @@
       },
       "ollama": {
         "name": "Ollama (Local, Free)",
-        "description": "Runs on your own machine, no API key or internet required."
+        "description": "Runs on your own machine, no API key or internet required. Start it with docker compose --profile local-llm up -d, or use a locally installed Ollama."
       },
       "custom": {
         "name": "Custom",

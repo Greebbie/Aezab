@@ -26,13 +26,32 @@ Requirements: Docker 24+ and Docker Compose v2 (the only hard requirement); Pyth
    docker compose up -d --build
    ```
 
-   This also starts `redis` and `ollama`: on first boot, `ollama-init` automatically downloads a small ~1GB local model (`qwen2.5:1.5b`) so the console has a working model out of the box. If you plan to use a cloud LLM instead (recommended), skip the wait and open the console directly — the first-run wizard walks you through it. Check readiness with `curl http://localhost:8000/health`.
+   By default this only starts `server` and `redis` — lightweight, fast to boot, no model download. Open the console and the first-run wizard walks you through connecting a cloud model (recommended). Check readiness with `curl http://localhost:8000/health`.
+
+   If you want a fully offline local model instead, use:
+
+   ```bash
+   docker compose --profile local-llm up -d
+   ```
+
+   This additionally starts `ollama`: on first boot, `ollama-init` automatically downloads a small ~1GB local model (`qwen2.5:1.5b`) so the console has a working model out of the box.
 
 2. **Open the console and follow the wizard**: visit `http://localhost:8000`. On first open you'll be guided through creating an admin account and logging in. If there's no model config or agent yet, a three-step setup wizard appears automatically — pick an LLM provider card (Qwen / Zhipu / MiniMax / OpenAI / local Ollama / custom, just paste an API key) → test the connection → create an agent from a template in one click ("Knowledge Support", "Repair Ticket", or "Booking") → jump into the Playground to test it. Pick "Knowledge Support" here.
 
 3. **Upload knowledge**: open the **Knowledge** page and upload your own FAQ / product docs for the agent you just created (TXT / MD / PDF / DOCX / CSV / XLSX supported — see "Knowledge Upload Standard" below).
 
-4. **Embed it on your site**: open **Integrations**, create an API key scoped to `invoke` only, then copy a `<script>` snippet into your website — it renders a floating chat bubble. A full runnable example is in `examples/widget-demo.html`; the attribute reference is in [`docs/integration.md`](docs/integration.md), section 9.
+4. **Wire it into your site or your backend**: open **Integrations**, create an API key scoped to `invoke` only, then pick either path (or both):
+
+   - **Web widget**: copy a `<script>` snippet into your website — it renders a floating chat bubble. A full runnable example is in `examples/widget-demo.html`.
+   - **API integration (the primary path)**: call the Headless API straight from your own product's backend to embed the agent into an app, CRM, support desk, or any business process:
+
+     ```bash
+     curl -X POST "http://localhost:8000/api/v1/invoke" \
+       -H "X-API-Key: <your-key>" -H "Content-Type: application/json" \
+       -d '{"agent_id": "<agent_id>", "message": "Hello"}'
+     ```
+
+   SSE streaming, the Python/JS SDKs, file upload, and retry semantics are all covered in [`docs/integration.md`](docs/integration.md) (widget attribute reference in section 9).
 
 > This is only one example of what the framework can do. Swap the template and the same flow becomes a repair-ticket bot or a booking assistant. Go further and you can compose workflows, tool calls, and multi-agent delegation into almost any business process — order lookup, internal knowledge assistants, approval flows, and more. Aezab is general-purpose agent infrastructure, not a customer-support product.
 >
@@ -72,14 +91,14 @@ Requirements: Docker 24+ and Docker Compose v2 (the only hard requirement); Pyth
 
 ### Model Configuration
 
-Aezab requires at least one working LLM. Set a default model in `.env`, or manage multiple model configs from the console.
+Aezab requires at least one working LLM. The recommended path is to leave the LLM settings in `.env` untouched and open the console instead — the first-run wizard connects a cloud model for you, and the config it writes to the database always takes priority over `.env` defaults. You can also manage multiple model configs from the console's Model Configs page.
 
-Local Ollama:
+Local Ollama (fully offline; start the `ollama` service first with `docker compose --profile local-llm up -d`):
 
 ```bash
 AEZAB_LLM_PROVIDER=openai_compatible
 AEZAB_LLM_BASE_URL=http://ollama:11434/v1
-AEZAB_LLM_MODEL=qwen2.5
+AEZAB_LLM_MODEL=qwen2.5:1.5b
 ```
 
 DashScope:

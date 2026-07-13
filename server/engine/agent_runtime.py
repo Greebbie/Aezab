@@ -2184,7 +2184,9 @@ class AgentRuntime:
     ) -> InvokeResponse:
         """Classified error fallback response."""
         error_lower = error.lower()
-        if "timeout" in error_lower or "timed out" in error_lower:
+        if "not configured" in error_lower:
+            msg = "尚未配置语言模型，请到「模型配置」页添加一个配置，或通过控制台的首次运行向导完成设置。"
+        elif "timeout" in error_lower or "timed out" in error_lower:
             msg = "请求超时，模型处理较慢，请稍后重试。"
         elif "connection" in error_lower or "connect" in error_lower:
             msg = "无法连接到语言模型服务，请检查服务状态后重试。"
