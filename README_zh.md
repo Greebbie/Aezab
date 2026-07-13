@@ -13,7 +13,7 @@
 
 </div>
 
-![Aezab 总览](docs/images/aezab-overview.png)
+![Aezab 总览](docs/images/aezab-overview-bi.png)
 
 ## 为什么选择 Aezab
 
