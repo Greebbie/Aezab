@@ -46,6 +46,12 @@ from server.engine.summary_scheduler import (
     schedule_summary_update,
 )
 from server.engine.vector_store import get_vector_store_if_initialized
+from server.engine.localization import (
+    Lang,
+    detect_lang,
+    server_followups,
+    server_text,
+)
 from server.runtime_config import runtime_config
 
 logger = logging.getLogger(__name__)
@@ -113,6 +119,29 @@ CONVERSATIONAL_SYSTEM_PROMPT_WITH_CONTEXT = """{persona}
 
 规则：如果用户只是询问信息，请基于参考资料简洁回答 1-3 句，并保留事实准确性；如果用户要办理业务、调用工具、计算或启动流程，必须调用可用工具，不要被参考资料分散。资料不足时再调用知识搜索工具。禁止说“没有提供”“未找到”。"""
 
+CONVERSATIONAL_SYSTEM_PROMPT_EN = """{persona}
+Rules: when the user wants to perform an action, call a tool, run a calculation, query an external system or start a workflow, you MUST call an available tool instead of answering in plain text; when the user asks for information, answer concisely in 1-3 sentences."""
+
+CONVERSATIONAL_SYSTEM_PROMPT_WITH_CONTEXT_EN = """{persona}
+
+Reference material:
+{context}
+
+Rules: if the user is asking for information, answer concisely in 1-3 sentences, grounded in the reference material and factually accurate; if the user wants to perform an action, call a tool, run a calculation or start a workflow, you MUST call an available tool and not be distracted by the reference material. If the material is insufficient, call the knowledge search tool. Never reply that the information was "not provided" or "not found"."""
+
+
+def _system_prompt_template(lang: Lang, with_context: bool) -> str:
+    """Pick the conversational system-prompt template for the request language."""
+    if lang == "zh":
+        return (
+            CONVERSATIONAL_SYSTEM_PROMPT_WITH_CONTEXT
+            if with_context else CONVERSATIONAL_SYSTEM_PROMPT
+        )
+    return (
+        CONVERSATIONAL_SYSTEM_PROMPT_WITH_CONTEXT_EN
+        if with_context else CONVERSATIONAL_SYSTEM_PROMPT_EN
+    )
+
 
 # ── Refusal phrases ─────────────────────────────────────────────
 
@@ -121,22 +150,28 @@ _REFUSAL_PHRASES = [
     "没有提供", "没有包含", "不包含", "未提及", "未提供",
     "没有找到", "未能找到", "无法确定", "没有数据", "无数据",
     "没有记录", "未收录", "资料中没有", "参考资料不足",
+    # English refusals (matched against the lowercased answer)
+    "no relevant information", "could not find", "couldn't find",
+    "not provided in", "does not contain", "doesn't contain",
+    "no information about", "not mentioned in", "unable to find",
+    "insufficient context", "insufficient information",
 ]
 
 
 def _apply_refusal_supplement(
-    answer: str, citations: list[Citation],
+    answer: str, citations: list[Citation], lang: Lang = "zh",
 ) -> tuple[str, bool]:
     """If the answer is a refusal but retrieval found data, append the top
     snippet as a clearly-labeled reference instead of silently replacing
     the answer. Returns (answer, was_supplemented)."""
-    if not citations or not any(p in answer for p in _REFUSAL_PHRASES):
+    answer_lower = answer.lower()
+    if not citations or not any(p in answer_lower for p in _REFUSAL_PHRASES):
         return answer, False
     snippet = next((c.content_snippet for c in citations if c.content_snippet), None)
     if not snippet:
         return answer, False
     supplemented = (
-        f"{answer}\n\n---\n以下是检索到的可能相关的资料片段，供参考：\n{snippet}"
+        f"{answer}\n\n---\n{server_text('refusal_supplement_intro', lang)}\n{snippet}"
     )
     return supplemented, True
 
@@ -440,6 +475,10 @@ class AgentRuntime:
         # after the session state is committed (avoids phantom events for
         # transitions a later pipeline failure would roll back).
         self._pending_events: list[tuple[str, str, dict]] = []
+        # Language for server-generated user-facing strings (followups,
+        # fallbacks, error messages). Set per-request from the incoming
+        # message in invoke(); "zh" preserves legacy behavior elsewhere.
+        self._lang: Lang = "zh"
 
     def _flush_pending_events(self) -> None:
         events, self._pending_events = self._pending_events, []
@@ -487,10 +526,14 @@ class AgentRuntime:
         are caught and logged; they never interrupt the pipeline.
         """
 
+        # 0. Server-generated text (fallbacks, followups, errors) follows
+        # the language of the incoming message for this whole request.
+        self._lang = detect_lang(req.message)
+
         # 1. Load agent config
         agent = await self._load_agent(req.agent_id)
         if agent is None:
-            return self._error_response("Agent 不存在或已停用", req)
+            return self._error_response(server_text("agent_not_found", self._lang), req)
 
         # 2. Get or create session
         session = await self._get_or_create_session(req, agent)
@@ -509,7 +552,7 @@ class AgentRuntime:
                     session_id=session.id,
                     trace_id=trace_id,
                     short_answer=risk_block,
-                    suggested_followups=["换个问题试试？"],
+                    suggested_followups=server_followups("fu_try_different", self._lang),
                 )
 
             # 5. Conversational pipeline
@@ -607,7 +650,7 @@ class AgentRuntime:
         })
 
         # ── Build messages ──
-        persona = agent.system_prompt or "你是一个智能助手。"
+        persona = agent.system_prompt or server_text("default_persona", self._lang)
 
         # Rolling summary: cheap read of whatever a PRIOR turn's background
         # fold already persisted onto session.context["summary"]. The fold
@@ -622,11 +665,13 @@ class AgentRuntime:
         history = await self._get_history(session.id, limit=RECENT_WINDOW)
 
         if pre_context:
-            system_msg = CONVERSATIONAL_SYSTEM_PROMPT_WITH_CONTEXT.format(
+            system_msg = _system_prompt_template(self._lang, with_context=True).format(
                 persona=persona, context=pre_context,
             )
         else:
-            system_msg = CONVERSATIONAL_SYSTEM_PROMPT.format(persona=persona)
+            system_msg = _system_prompt_template(self._lang, with_context=False).format(
+                persona=persona,
+            )
 
         messages: list[LLMMessage] = [LLMMessage(role="system", content=system_msg)]
 
@@ -642,7 +687,10 @@ class AgentRuntime:
             messages.append(LLMMessage(role="system", content=longterm_memory))
 
         if summary_text:
-            messages.append(LLMMessage(role="system", content=f"[对话摘要] {summary_text}"))
+            messages.append(LLMMessage(
+                role="system",
+                content=f"{server_text('summary_prefix', self._lang)} {summary_text}",
+            ))
 
         for msg in history:
             messages.append(LLMMessage(role=msg.role, content=msg.content))
@@ -651,14 +699,16 @@ class AgentRuntime:
         # calls the tool instead of answering with text
         user_content = req.message
         if action_intent.detected:
-            user_content = (
-                f"{req.message}\n"
-                f"[系统：检测到{action_intent.kind or 'action'}请求，请调用最匹配的工具处理，不要用文字直接代办。]"
+            nudge = server_text("action_intent_nudge", self._lang).format(
+                kind=action_intent.kind or "action",
             )
+            user_content = f"{req.message}\n{nudge}"
         messages.append(LLMMessage(role="user", content=user_content))
 
         if req.expand:
-            messages.append(LLMMessage(role="user", content="请给出详细完整的回答。"))
+            messages.append(LLMMessage(
+                role="user", content=server_text("expand_nudge", self._lang),
+            ))
 
         # ── Multi-round function calling loop ──
         llm = await get_llm_adapter_for_agent(agent, self.db)
@@ -863,13 +913,13 @@ class AgentRuntime:
             elif pre_context:
                 short_answer = pre_context[:500]
             elif tool_calls_log:
-                short_answer = "操作已完成。"
+                short_answer = server_text("op_done", self._lang)
             else:
-                short_answer = "抱歉，未能获取到有效回复，请重试。"
+                short_answer = server_text("empty_reply", self._lang)
 
         # Refusal + citations: append labeled reference, never silently replace
         short_answer, refusal_supplemented = _apply_refusal_supplement(
-            short_answer, collected_citations,
+            short_answer, collected_citations, self._lang,
         )
         if refusal_supplemented:
             audit.log("refusal_supplement", event_data={"citations": len(collected_citations)})
@@ -895,13 +945,13 @@ class AgentRuntime:
 
         # Followups
         if collected_workflow_card:
-            followups = ["如何填写？", "需要准备什么材料？"]
+            followups = server_followups("fu_workflow_filling", self._lang)
         elif user_facing_citations:
-            followups = ["需要更多详细信息吗？", "还有其他问题吗？"]
+            followups = server_followups("fu_more_detail", self._lang)
         elif tool_calls_log:
-            followups = ["查看详细结果", "还有其他问题吗？"]
+            followups = server_followups("fu_tool_result", self._lang)
         else:
-            followups = ["有什么可以帮助你的吗？"]
+            followups = server_followups("fu_anything_else", self._lang)
 
         audit.log("response", event_data={
             "short_answer": short_answer[:200],
@@ -1260,7 +1310,7 @@ class AgentRuntime:
                 retrieval = await retriever.retrieve(query, domain=domain, top_k=5)
             except Exception as e:
                 logger.warning(f"Knowledge retrieval failed: {e}")
-                return SkillToolResult(text="知识库检索失败，请稍后重试。")
+                return SkillToolResult(text=server_text("kb_search_failed", self._lang))
 
             audit.log(
                 "retrieval",
@@ -1273,7 +1323,7 @@ class AgentRuntime:
             )
 
             if not retrieval or not retrieval.hits:
-                return SkillToolResult(text="未找到相关信息。")
+                return SkillToolResult(text=server_text("kb_no_results", self._lang))
 
             parts = []
             citations = []
@@ -1281,7 +1331,8 @@ class AgentRuntime:
                 parts.append(f"[{i+1}] {truncate_text(hit.content, 800)}")
                 citations.append(Citation(
                     source_id=hit.source_id or "",
-                    source_name=hit.source_name or f"来源{i+1}",
+                    source_name=hit.source_name
+                    or server_text("source_n", self._lang).format(n=i + 1),
                     content_snippet=hit.content[:200],
                     page=hit.page,
                     score=hit.score,
@@ -1307,7 +1358,9 @@ class AgentRuntime:
                 text = truncate_text(text, MAX_TOOL_RESULT_TOKENS)
                 return SkillToolResult(text=text)
             except Exception as e:
-                return SkillToolResult(text=f"工具调用失败: {e}")
+                return SkillToolResult(
+                    text=server_text("tool_call_failed", self._lang).format(e=e),
+                )
 
         return handler
 
@@ -1344,7 +1397,9 @@ class AgentRuntime:
             except Exception as e:
                 session.workflow_state = None
                 session.active_skill_id = None
-                return SkillToolResult(text=f"流程启动失败: {e}")
+                return SkillToolResult(
+                    text=server_text("wf_start_failed", self._lang).format(e=e),
+                )
 
             # Defer any queued events until the conversational tail commits.
             self._pending_events.extend(executor.pending_events)
@@ -1375,10 +1430,12 @@ class AgentRuntime:
             # Cycle and depth protection
             chain = list(session.delegation_chain or [])
             if target_agent_id in chain:
-                return SkillToolResult(text="检测到循环委派，无法继续。")
+                return SkillToolResult(text=server_text("delegate_cycle", self._lang))
             if len(chain) >= MAX_DELEGATION_DEPTH:
                 return SkillToolResult(
-                    text=f"委派深度超过限制 ({MAX_DELEGATION_DEPTH})。",
+                    text=server_text("delegate_depth", self._lang).format(
+                        n=MAX_DELEGATION_DEPTH,
+                    ),
                 )
 
             chain.append(source_agent.id)
@@ -1413,7 +1470,9 @@ class AgentRuntime:
             try:
                 response = await runtime.invoke(delegated_req)
             except Exception as e:
-                return SkillToolResult(text=f"委派失败: {e}")
+                return SkillToolResult(
+                    text=server_text("delegate_failed", self._lang).format(e=e),
+                )
             finally:
                 session.delegation_chain = None
 
@@ -1773,7 +1832,7 @@ class AgentRuntime:
                 }, latency_ms=wf_latency)
                 return await self._finalize_workflow_turn(session, req, trace_id, audit, result, executor)
 
-            canned = '已转人工处理，处理完成后可回复"继续"恢复流程。'
+            canned = server_text("wf_escalated_canned", self._lang)
             await self._save_message(session.id, "user", req.message, trace_id)
             await self._save_message(session.id, "assistant", canned, trace_id)
             await self._save_session(session)
@@ -1784,7 +1843,7 @@ class AgentRuntime:
                 short_answer=canned,
                 workflow_status="paused_for_review",
                 escalated=True,
-                suggested_followups=["继续"],
+                suggested_followups=server_followups("fu_resume", self._lang),
             )
 
         # ── await_retry: last submission failed after retries ──
@@ -1794,7 +1853,7 @@ class AgentRuntime:
         if wf_state.get("status") == "await_retry":
             message = (req.message or "").strip().lower()
             if not any(kw in message for kw in _WORKFLOW_RETRY_KEYWORDS):
-                reprompt = '提交尚未成功，回复"重试"重新提交，或"取消"放弃。'
+                reprompt = server_text("wf_retry_reprompt", self._lang)
                 await self._save_message(session.id, "user", req.message, trace_id)
                 await self._save_message(session.id, "assistant", reprompt, trace_id)
                 await self._save_session(session)
@@ -1804,7 +1863,7 @@ class AgentRuntime:
                     trace_id=trace_id,
                     short_answer=reprompt,
                     workflow_status="await_retry",
-                    suggested_followups=["重试", "取消"],
+                    suggested_followups=server_followups("fu_retry_cancel", self._lang),
                 )
             # Retry intent confirmed — fall through to re-run process_step,
             # which re-executes the (unchanged) current step: the complete
@@ -1856,11 +1915,11 @@ class AgentRuntime:
 
         followups = []
         if result.status == "waiting_input":
-            followups = ["如何填写？", "需要准备什么材料？"]
+            followups = server_followups("fu_workflow_filling", self._lang)
         elif result.status == "completed":
-            followups = ["查看办理结果", "还有其他问题"]
+            followups = server_followups("fu_wf_completed", self._lang)
         elif result.status == "escalated":
-            followups = ["人工客服工作时间？", "还能自助办理吗？"]
+            followups = server_followups("fu_wf_escalated", self._lang)
 
         return InvokeResponse(
             session_id=session.id,
@@ -1899,7 +1958,7 @@ class AgentRuntime:
             trace_id=trace_id,
             short_answer=cancel_msg,
             workflow_status="cancelled",
-            suggested_followups=["有什么其他可以帮助你的吗？", "需要重新开始吗？"],
+            suggested_followups=server_followups("fu_wf_cancelled", self._lang),
         )
 
     # ── Skill loading ────────────────────────────────────────
@@ -2169,7 +2228,7 @@ class AgentRuntime:
         forbidden_keywords = risk_config.get("forbidden_keywords", [])
         for kw in forbidden_keywords:
             if kw in message:
-                return "您的问题涉及敏感内容，无法回答。如有需要请联系人工客服。"
+                return server_text("risk_blocked", detect_lang(message))
         return None
 
     def _error_response(self, message: str, req: InvokeRequest) -> InvokeResponse:
@@ -2185,20 +2244,20 @@ class AgentRuntime:
         """Classified error fallback response."""
         error_lower = error.lower()
         if "not configured" in error_lower:
-            msg = "尚未配置语言模型，请到「模型配置」页添加一个配置，或通过控制台的首次运行向导完成设置。"
+            msg = server_text("err_not_configured", self._lang)
         elif "timeout" in error_lower or "timed out" in error_lower:
-            msg = "请求超时，模型处理较慢，请稍后重试。"
+            msg = server_text("err_timeout", self._lang)
         elif "connection" in error_lower or "connect" in error_lower:
-            msg = "无法连接到语言模型服务，请检查服务状态后重试。"
+            msg = server_text("err_connection", self._lang)
         elif "rate" in error_lower or "429" in error_lower:
-            msg = "请求频率过高，请稍后重试。"
+            msg = server_text("err_rate_limited", self._lang)
         else:
-            msg = "系统暂时无法响应，请稍后重试或联系人工客服。"
+            msg = server_text("err_generic", self._lang)
 
         return InvokeResponse(
             session_id=session_id,
             trace_id=trace_id,
             short_answer=msg,
-            suggested_followups=["转人工客服", "稍后重试"],
+            suggested_followups=server_followups("fu_error", self._lang),
             metadata={"error_detail": error},
         )

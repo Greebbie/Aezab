@@ -652,12 +652,12 @@ export default function PlaygroundPage() {
 
   const handleWorkflowConfirm = async () => {
     setWorkflowFormData({});
-    await sendPayload('确认');
+    await sendPayload(t('playground.confirmText'));
   };
 
   const handleWorkflowCancel = async () => {
     setWorkflowFormData({});
-    await sendPayload('取消');
+    await sendPayload(t('playground.cancelText'));
   };
 
   /* ── Handle followup click ─────────────────────────── */

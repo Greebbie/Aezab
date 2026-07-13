@@ -7,22 +7,6 @@ import { friendlyError } from '../utils/friendlyError';
 
 const { TextArea } = Input;
 
-const STEP_TYPES = [
-  { value: 'collect', label: '收集信息' },
-  { value: 'validate', label: '校验' },
-  { value: 'tool_call', label: '工具调用' },
-  { value: 'confirm', label: '用户确认' },
-  { value: 'human_review', label: '人工审核' },
-  { value: 'complete', label: '完成' },
-];
-
-const FAILURE_ACTIONS = [
-  { value: 'retry', label: '重试' },
-  { value: 'skip', label: '跳过' },
-  { value: 'rollback', label: '回退' },
-  { value: 'escalate', label: '转人工' },
-];
-
 const FIELD_TYPES = [
   { value: 'text', label: 'Text' },
   { value: 'number', label: 'Number' },
@@ -35,6 +19,22 @@ const FIELD_TYPES = [
 
 export default function WorkflowsPage() {
   const { t } = useTranslation();
+
+  const STEP_TYPES = [
+    { value: 'collect', label: t('workflows.stepTypes.collect') },
+    { value: 'validate', label: t('workflows.stepTypes.validate') },
+    { value: 'tool_call', label: t('workflows.stepTypes.tool_call') },
+    { value: 'confirm', label: t('workflows.stepTypes.confirm') },
+    { value: 'human_review', label: t('workflows.stepTypes.human_review') },
+    { value: 'complete', label: t('workflows.stepTypes.complete') },
+  ];
+
+  const FAILURE_ACTIONS = [
+    { value: 'retry', label: t('workflows.failureStrategies.retry') },
+    { value: 'skip', label: t('workflows.failureStrategies.skip') },
+    { value: 'rollback', label: t('workflows.failureStrategies.rollback') },
+    { value: 'escalate', label: t('workflows.failureStrategies.escalate') },
+  ];
   const [workflows, setWorkflows] = useState<any[]>([]);
   const [tools, setTools] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -56,7 +56,7 @@ export default function WorkflowsPage() {
       setWorkflows(wfRes.data);
       setTools(toolRes.data);
     } catch (e: any) {
-      message.error('加载数据失败');
+      message.error(t('workflows.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -70,31 +70,31 @@ export default function WorkflowsPage() {
     try {
       const values = await form.validateFields();
       await workflowApi.create(values);
-      message.success('工作流已创建');
+      message.success(t('workflows.created'));
       setModalOpen(false);
       form.resetFields();
       load();
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('创建失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('workflows.createFailed')}: ` + (e.response?.data?.detail || e.message || t('common.unknown')));
     }
   };
 
   const handleDeleteWf = async (id: string) => {
     try {
       await workflowApi.delete(id);
-      message.success('已删除');
+      message.success(t('workflows.deleted'));
       load();
     } catch (e: any) {
-      message.error('删除失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('workflows.deleteFailed')}: ` + (e.response?.data?.detail || e.message || t('common.unknown')));
     }
   };
 
   const confirmPlainDeleteWf = (id: string) => {
     Modal.confirm({
-      title: '确认删除此工作流及其所有步骤？',
-      okText: '确认',
-      cancelText: '取消',
+      title: t('workflows.deleteWorkflowConfirmTitle'),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
       onOk: () => handleDeleteWf(id),
     });
   };
@@ -122,7 +122,7 @@ export default function WorkflowsPage() {
         ),
         okText: t('workflows.deleteAnyway'),
         okType: 'danger',
-        cancelText: '取消',
+        cancelText: t('common.cancel'),
         onOk: () => handleDeleteWf(id),
       });
       return;
@@ -193,10 +193,10 @@ export default function WorkflowsPage() {
 
       if (editingStep) {
         await workflowApi.updateStep(selectedWf.id, editingStep.id, values);
-        message.success('步骤已更新');
+        message.success(t('workflows.stepUpdated'));
       } else {
         await workflowApi.addStep(selectedWf.id, values);
-        message.success('步骤已添加');
+        message.success(t('workflows.stepAdded'));
       }
       setStepModalOpen(false);
       setEditingStep(null);
@@ -204,32 +204,32 @@ export default function WorkflowsPage() {
       load();
     } catch (e: any) {
       if (e.errorFields) return;
-      message.error('保存失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('workflows.saveFailed')}: ` + (e.response?.data?.detail || e.message || t('common.unknown')));
     }
   };
 
   const handleDeleteStep = async (wfId: string, stepId: string) => {
     try {
       await workflowApi.deleteStep(wfId, stepId);
-      message.success('步骤已删除');
+      message.success(t('workflows.stepDeleted'));
       load();
     } catch (e: any) {
-      message.error('删除失败: ' + (e.response?.data?.detail || e.message || '未知错误'));
+      message.error(`${t('workflows.deleteFailed')}: ` + (e.response?.data?.detail || e.message || t('common.unknown')));
     }
   };
 
   const columns = [
-    { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
-    { title: '步骤数', key: 'steps', render: (_: any, r: any) => r.steps?.length || 0 },
-    { title: '版本', dataIndex: 'version', key: 'version' },
+    { title: t('common.name'), dataIndex: 'name', key: 'name' },
+    { title: t('common.description'), dataIndex: 'description', key: 'description', ellipsis: true },
+    { title: t('workflows.steps'), key: 'steps', render: (_: any, r: any) => r.steps?.length || 0 },
+    { title: t('common.version'), dataIndex: 'version', key: 'version' },
     {
-      title: '操作', key: 'actions', render: (_: any, record: any) => (
+      title: t('common.actions'), key: 'actions', render: (_: any, record: any) => (
         <Space>
           <Button icon={<PlusOutlined />} size="small" onClick={() => { setSelectedWf(record); setEditingStep(null); stepForm.resetFields(); setStepModalOpen(true); }}>
-            添加步骤
+            {t('workflows.addStep')}
           </Button>
-          <Button icon={<DeleteOutlined />} size="small" danger onClick={() => handleDeleteWfClick(record.id)}>删除</Button>
+          <Button icon={<DeleteOutlined />} size="small" danger onClick={() => handleDeleteWfClick(record.id)}>{t('common.delete')}</Button>
         </Space>
       ),
     },
@@ -238,9 +238,9 @@ export default function WorkflowsPage() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2>流程编排</h2>
+        <h2>{t('workflows.title')}</h2>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setModalOpen(true); }}>
-          创建工作流
+          {t('workflows.create')}
         </Button>
       </div>
 
@@ -253,14 +253,14 @@ export default function WorkflowsPage() {
           expandedRowRender: (record) => (
             <List
               size="small"
-              header={<strong>步骤列表</strong>}
+              header={<strong>{t('workflows.steps')}</strong>}
               dataSource={record.steps || []}
               renderItem={(step: any) => (
                 <List.Item
                   actions={[
-                    <Button size="small" icon={<EditOutlined />} onClick={() => openEditStep(record, step)}>编辑</Button>,
-                    <Popconfirm title="确认删除此步骤？" onConfirm={() => handleDeleteStep(record.id, step.id)} okText="确认" cancelText="取消">
-                      <Button size="small" danger>删除</Button>
+                    <Button size="small" icon={<EditOutlined />} onClick={() => openEditStep(record, step)}>{t('common.edit')}</Button>,
+                    <Popconfirm title={t('workflows.deleteStepConfirm')} onConfirm={() => handleDeleteStep(record.id, step.id)} okText={t('common.confirm')} cancelText={t('common.cancel')}>
+                      <Button size="small" danger>{t('common.delete')}</Button>
                     </Popconfirm>,
                   ]}
                 >
@@ -269,7 +269,7 @@ export default function WorkflowsPage() {
                     title={`${step.name} (${step.step_type})`}
                     description={
                       <div>
-                        <div>{step.prompt_template || '无提示语'}</div>
+                        <div>{step.prompt_template || t('workflows.noPromptTemplate')}</div>
                         {step.step_type === 'collect' && step.fields?.length > 0 && (
                           <div style={{ marginTop: 4 }}>
                             {step.fields.map((f: any) => (
@@ -284,8 +284,8 @@ export default function WorkflowsPage() {
                     }
                   />
                   <Space>
-                    {step.requires_human_confirm && <Tag color="orange">需确认</Tag>}
-                    {step.tool_id && <Tag color="purple">绑定工具</Tag>}
+                    {step.requires_human_confirm && <Tag color="orange">{t('workflows.requiresConfirmTag')}</Tag>}
+                    {step.tool_id && <Tag color="purple">{t('workflows.toolBoundTag')}</Tag>}
                     <Tag>{step.on_failure}</Tag>
                   </Space>
                 </List.Item>
@@ -296,20 +296,22 @@ export default function WorkflowsPage() {
       />
 
       {/* Create workflow modal */}
-      <Modal title="创建工作流" open={modalOpen} onOk={handleCreateWf} onCancel={() => setModalOpen(false)}>
+      <Modal title={t('workflows.create')} open={modalOpen} onOk={handleCreateWf} onCancel={() => setModalOpen(false)}>
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-            <Input placeholder="如：居住证办理" />
+          <Form.Item name="name" label={t('common.name')} rules={[{ required: true }]}>
+            <Input placeholder={t('workflows.namePlaceholderExample')} />
           </Form.Item>
-          <Form.Item name="description" label="描述">
-            <TextArea rows={2} placeholder="描述流程用途" />
+          <Form.Item name="description" label={t('common.description')}>
+            <TextArea rows={2} placeholder={t('workflows.descriptionPlaceholder')} />
           </Form.Item>
         </Form>
       </Modal>
 
       {/* Add/Edit step modal */}
       <Modal
-        title={editingStep ? `编辑步骤 - ${selectedWf?.name || ''}` : `添加步骤 - ${selectedWf?.name || ''}`}
+        title={editingStep
+          ? t('workflows.editStepModalTitle', { name: selectedWf?.name || '' })
+          : t('workflows.addStepModalTitle', { name: selectedWf?.name || '' })}
         open={stepModalOpen}
         onOk={handleSaveStep}
         onCancel={() => { setStepModalOpen(false); setEditingStep(null); }}
@@ -328,36 +330,36 @@ export default function WorkflowsPage() {
           }}
         >
           {/* ── Common fields ── */}
-          <Form.Item name="name" label="步骤名称" rules={[{ required: true }]}>
-            <Input placeholder="如：填写个人信息" />
+          <Form.Item name="name" label={t('workflows.stepName')} rules={[{ required: true }]}>
+            <Input placeholder={t('workflows.stepNamePlaceholder')} />
           </Form.Item>
-          <Form.Item name="order" label="顺序号" rules={[{ required: true }]}>
+          <Form.Item name="order" label={t('workflows.stepOrder')} rules={[{ required: true }]}>
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="step_type" label="步骤类型">
+          <Form.Item name="step_type" label={t('workflows.stepType')}>
             <Select options={STEP_TYPES} />
           </Form.Item>
-          <Form.Item name="prompt_template" label="提示语模板">
-            <TextArea rows={3} placeholder="请填写您的姓名、身份证号..." />
+          <Form.Item name="prompt_template" label={t('workflows.promptTemplate')}>
+            <TextArea rows={3} placeholder={t('workflows.promptTemplatePlaceholder')} />
           </Form.Item>
-          <Form.Item name="on_failure" label="失败策略">
+          <Form.Item name="on_failure" label={t('workflows.onFailure')}>
             <Select options={FAILURE_ACTIONS} />
           </Form.Item>
-          <Form.Item name="max_retries" label="最大重试次数">
+          <Form.Item name="max_retries" label={t('workflows.maxRetries')}>
             <InputNumber min={0} max={10} />
           </Form.Item>
-          <Form.Item name="risk_level" label="风险等级">
+          <Form.Item name="risk_level" label={t('workflows.riskLevel')}>
             <Select options={[
-              { value: 'info', label: '普通' },
-              { value: 'warning', label: '警告' },
-              { value: 'critical', label: '严重' },
+              { value: 'info', label: t('workflows.riskLevels.info') },
+              { value: 'warning', label: t('workflows.riskLevels.warning') },
+              { value: 'critical', label: t('workflows.riskLevels.critical') },
             ]} />
           </Form.Item>
 
           {/* ── collect: form fields editor ── */}
           {stepType === 'collect' && (
             <>
-              <Divider orientation="left">表单字段配置</Divider>
+              <Divider orientation="left">{t('workflows.fieldsConfig')}</Divider>
               <Form.List name="fields">
                 {(fields, { add, remove }) => (
                   <>
@@ -366,15 +368,15 @@ export default function WorkflowsPage() {
                         key={key}
                         size="small"
                         style={{ marginBottom: 8 }}
-                        title={`字段 #${name + 1}`}
+                        title={t('workflows.fieldNumber', { n: name + 1 })}
                         extra={<MinusCircleOutlined style={{ color: '#ff4d4f' }} onClick={() => remove(name)} />}
                       >
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                           <Form.Item
                             {...restField}
                             name={[name, 'name']}
-                            label="字段名"
-                            rules={[{ required: true, message: '必填' }]}
+                            label={t('workflows.fieldName')}
+                            rules={[{ required: true, message: t('common.required') }]}
                             style={{ flex: 1, minWidth: 120 }}
                           >
                             <Input placeholder="field_name" />
@@ -382,16 +384,16 @@ export default function WorkflowsPage() {
                           <Form.Item
                             {...restField}
                             name={[name, 'label']}
-                            label="显示标签"
-                            rules={[{ required: true, message: '必填' }]}
+                            label={t('workflows.fieldLabel')}
+                            rules={[{ required: true, message: t('common.required') }]}
                             style={{ flex: 1, minWidth: 120 }}
                           >
-                            <Input placeholder="姓名" />
+                            <Input placeholder={t('workflows.fieldLabelPlaceholder')} />
                           </Form.Item>
                           <Form.Item
                             {...restField}
                             name={[name, 'field_type']}
-                            label="类型"
+                            label={t('workflows.fieldType')}
                             style={{ width: 110 }}
                           >
                             <Select options={FIELD_TYPES} />
@@ -399,14 +401,14 @@ export default function WorkflowsPage() {
                           <Form.Item
                             {...restField}
                             name={[name, 'required']}
-                            label="必填"
+                            label={t('workflows.fieldRequired')}
                             valuePropName="checked"
                           >
                             <Switch />
                           </Form.Item>
                         </div>
-                        <Form.Item {...restField} name={[name, 'placeholder']} label="占位符">
-                          <Input placeholder="请输入..." />
+                        <Form.Item {...restField} name={[name, 'placeholder']} label={t('workflows.placeholderLabel')}>
+                          <Input placeholder={t('workflows.placeholderPlaceholder')} />
                         </Form.Item>
                         {/* options: only for select type */}
                         <Form.Item shouldUpdate noStyle>
@@ -416,10 +418,10 @@ export default function WorkflowsPage() {
                             return (
                               <Form.Item
                                 name={[name, 'options']}
-                                label="选项 (JSON)"
-                                extra='格式: [{"label":"选项1","value":"v1"}, {"label":"选项2","value":"v2"}]'
+                                label={t('workflows.optionsLabel')}
+                                extra={t('workflows.optionsExtra')}
                               >
-                                <TextArea rows={2} placeholder='[{"label":"选项1","value":"v1"}]' />
+                                <TextArea rows={2} placeholder='[{"label":"Option 1","value":"v1"}]' />
                               </Form.Item>
                             );
                           }}
@@ -427,7 +429,7 @@ export default function WorkflowsPage() {
                       </Card>
                     ))}
                     <Button type="dashed" onClick={() => add({ field_type: 'text', required: true })} block icon={<PlusOutlined />}>
-                      添加字段
+                      {t('workflows.addField')}
                     </Button>
                   </>
                 )}
@@ -438,14 +440,14 @@ export default function WorkflowsPage() {
           {/* ── tool_call: tool binding ── */}
           {stepType === 'tool_call' && (
             <>
-              <Divider orientation="left">工具绑定</Divider>
-              <Form.Item name="tool_id" label="选择工具" rules={[{ required: true, message: '工具调用步骤必须选择工具' }]}>
-                <Select allowClear placeholder="选择工具" options={toolOptions} />
+              <Divider orientation="left">{t('workflows.toolBinding')}</Divider>
+              <Form.Item name="tool_id" label={t('workflows.selectToolLabel')} rules={[{ required: true, message: t('workflows.toolRequiredMsg') }]}>
+                <Select allowClear placeholder={t('workflows.selectToolPlaceholder')} options={toolOptions} />
               </Form.Item>
               <Form.Item shouldUpdate noStyle>
                 {({ getFieldValue }) => {
                   const tid = getFieldValue('tool_id');
-                  const tool = tools.find(t => t.id === tid);
+                  const tool = tools.find(tl => tl.id === tid);
                   if (!tool) return null;
                   return (
                     <div style={{ color: '#888', marginBottom: 16, fontSize: 12 }}>
@@ -460,8 +462,8 @@ export default function WorkflowsPage() {
           {/* ── confirm: human confirm switch ── */}
           {stepType === 'confirm' && (
             <>
-              <Divider orientation="left">确认配置</Divider>
-              <Form.Item name="requires_human_confirm" label="需要人工确认" valuePropName="checked">
+              <Divider orientation="left">{t('workflows.confirmConfig')}</Divider>
+              <Form.Item name="requires_human_confirm" label={t('workflows.requiresHumanConfirmLabel')} valuePropName="checked">
                 <Switch />
               </Form.Item>
             </>
@@ -470,8 +472,8 @@ export default function WorkflowsPage() {
           {/* ── complete: webhook config ── */}
           {stepType === 'complete' && (
             <>
-              <Divider orientation="left">Webhook 配置</Divider>
-              <Form.Item name={['tool_config', 'webhook_enabled']} label="完成时发送到外部接口" valuePropName="checked">
+              <Divider orientation="left">{t('workflows.webhookConfig')}</Divider>
+              <Form.Item name={['tool_config', 'webhook_enabled']} label={t('workflows.sendToExternalOnComplete')} valuePropName="checked">
                 <Switch />
               </Form.Item>
               <Form.Item shouldUpdate noStyle>
@@ -481,12 +483,12 @@ export default function WorkflowsPage() {
                     <>
                       <Form.Item
                         name={['tool_config', 'webhook_url']}
-                        label="接口地址"
-                        rules={[{ required: true, message: '开启 Webhook 时必须填写接口地址' }]}
+                        label={t('workflows.webhookUrlLabel')}
+                        rules={[{ required: true, message: t('workflows.webhookUrlRequiredMsg') }]}
                       >
                         <Input placeholder="https://example.com/webhook" />
                       </Form.Item>
-                      <Form.Item name={['tool_config', 'webhook_method']} label="请求方法">
+                      <Form.Item name={['tool_config', 'webhook_method']} label={t('workflows.webhookMethodLabel')}>
                         <Select options={[
                           { value: 'POST', label: 'POST' },
                           { value: 'PUT', label: 'PUT' },
@@ -495,8 +497,8 @@ export default function WorkflowsPage() {
                       </Form.Item>
                       <Form.Item
                         name={['tool_config', 'webhook_headers']}
-                        label="请求头 (JSON, 可选)"
-                        extra='格式: {"Authorization":"Bearer xxx"}'
+                        label={t('workflows.webhookHeadersLabel')}
+                        extra={t('workflows.webhookHeadersExtra')}
                       >
                         <TextArea rows={2} placeholder='{"Authorization":"Bearer xxx"}' />
                       </Form.Item>

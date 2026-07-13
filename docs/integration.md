@@ -9,6 +9,34 @@
 
 ---
 
+## 集成面概览
+
+Integrations 面向开发者联调，不是第二套 Agent 配置系统。
+
+| 分类 | 用途 |
+| --- | --- |
+| Inbound API | 外部系统调用 Aezab Agent（REST + SSE，也提供 Python/JS SDK）。 |
+| ASR | 上传音频并返回转写文本，可用于语音入口。 |
+| Outbound Tools | Agent 调用客户后端 API，例如创建工单、查询订单、更新 CRM。 |
+| Workflow Webhooks | 工作流完成或关键步骤完成后回调客户系统，带 HMAC 签名。 |
+| Embeddable Widget | 一段 `<script>` 标签即可在任意网页嵌入聊天气泡（见本文档第 9 节）。 |
+| Trace & Debug | 查看最近调用、事件类型和审计日志。 |
+
+典型链路：
+
+```text
+Customer App
+  -> POST /api/v1/invoke
+  -> Agent Runtime
+  -> RAG / Workflow / Tool Calling
+  -> Customer API or final response
+```
+
+所有 API 都需要 `X-API-Key` 请求头，Key 从控制台 **Integrations** 页面创建（勾选 `invoke`
+作用域即可）。
+
+---
+
 ## 1. 获取 API Key
 
 所有 Headless API 调用都通过 `X-API-Key` 请求头认证。API Key 携带 **scopes**（作用域），

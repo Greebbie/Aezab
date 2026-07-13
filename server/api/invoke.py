@@ -26,6 +26,7 @@ from server.exceptions import (
 )
 from server.schemas.invoke import InvokeRequest, InvokeResponse
 from server.engine.agent_runtime import AgentRuntime
+from server.engine.localization import detect_lang, server_text
 from server.engine.request_guard import (
     get_idempotent_response,
     session_lock,
@@ -114,7 +115,7 @@ async def invoke(
     except asyncio.TimeoutError:
         raise HTTPException(
             status_code=504,
-            detail="请求处理超时，请稍后重试。",
+            detail=server_text("err_pipeline_timeout", detect_lang(req.message)),
         )
 
     return response
@@ -179,6 +180,7 @@ async def invoke_stream(
 
     async def _run_pipeline() -> None:
         """Execute the agent pipeline and push SSE events onto the queue."""
+        lang = detect_lang(req.message)
         try:
             await _check_agent_tenant(db, req.agent_id, tenant_id)
 
@@ -198,7 +200,7 @@ async def invoke_stream(
                 await queue.put(_sse_event("error", {
                     "detail": "pipeline timeout",
                     "error_type": "timeout",
-                    "error_msg": "请求处理超时，请稍后重试。",
+                    "error_msg": server_text("err_pipeline_timeout", lang),
                 }))
                 return
 
@@ -225,42 +227,42 @@ async def invoke_stream(
             await queue.put(_sse_event("error", {
                 "detail": str(exc),
                 "error_type": "timeout",
-                "error_msg": "请求超时，模型处理较慢，请稍后重试。",
+                "error_msg": server_text("err_timeout", lang),
             }))
         except LLMRateLimitError as exc:
             logger.error("SSE pipeline LLM rate limit: %s", exc, exc_info=True)
             await queue.put(_sse_event("error", {
                 "detail": str(exc),
                 "error_type": "rate_limit",
-                "error_msg": "请求频率过高，请稍后重试。",
+                "error_msg": server_text("err_rate_limited", lang),
             }))
         except LLMError as exc:
             logger.error("SSE pipeline LLM error: %s", exc, exc_info=True)
             await queue.put(_sse_event("error", {
                 "detail": str(exc),
                 "error_type": "llm_error",
-                "error_msg": "语言模型服务异常，请检查配置后重试。",
+                "error_msg": server_text("err_llm", lang),
             }))
         except RetrievalError as exc:
             logger.error("SSE pipeline retrieval error: %s", exc, exc_info=True)
             await queue.put(_sse_event("error", {
                 "detail": str(exc),
                 "error_type": "retrieval",
-                "error_msg": "知识检索服务异常，请稍后重试。",
+                "error_msg": server_text("err_retrieval", lang),
             }))
         except WorkflowError as exc:
             logger.error("SSE pipeline workflow error: %s", exc, exc_info=True)
             await queue.put(_sse_event("error", {
                 "detail": str(exc),
                 "error_type": "workflow",
-                "error_msg": "流程执行异常，请检查流程配置。",
+                "error_msg": server_text("err_workflow", lang),
             }))
         except ToolInvocationError as exc:
             logger.error("SSE pipeline tool error: %s", exc, exc_info=True)
             await queue.put(_sse_event("error", {
                 "detail": str(exc),
                 "error_type": "tool",
-                "error_msg": "工具调用失败，请检查工具配置。",
+                "error_msg": server_text("err_tool", lang),
             }))
         except AezabError as exc:
             logger.error("SSE pipeline Aezab error: %s", exc, exc_info=True)
@@ -281,7 +283,7 @@ async def invoke_stream(
             await queue.put(_sse_event("error", {
                 "detail": str(exc),
                 "error_type": "internal",
-                "error_msg": "系统暂时无法响应，请稍后重试或联系人工客服。",
+                "error_msg": server_text("err_generic", lang),
             }))
         finally:
             # Sentinel: signals the generator to stop

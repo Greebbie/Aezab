@@ -7,6 +7,7 @@ import {
   ToolOutlined,
   PlayCircleOutlined,
 } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import type { LLMConfig, KnowledgeSource, Workflow, Tool } from '../../types';
 import { agentApi, agentCapabilitiesApi, llmConfigApi, knowledgeApi, workflowApi, toolApi } from '../../api';
 
@@ -20,6 +21,7 @@ interface AgentWizardProps {
 }
 
 export default function AgentWizard({ open, onClose, onCreated, onSwitchToTemplate }: AgentWizardProps) {
+  const { t } = useTranslation();
   const [current, setCurrent] = useState(0);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
@@ -126,8 +128,8 @@ export default function AgentWizard({ open, onClose, onCreated, onSwitchToTempla
             style={{ marginBottom: 16 }}
             message={(
               <span>
-                想快速开始？试试{' '}
-                <a onClick={onSwitchToTemplate}>从模板创建</a>
+                {t('agents.wizard.quickStartPrefix')}{' '}
+                <a onClick={onSwitchToTemplate}>{t('agents.wizard.tryTemplateLink')}</a>
               </span>
             )}
           />

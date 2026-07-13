@@ -378,7 +378,7 @@ export default function AgentsPage() {
         <Space>
           <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)}>Edit</Button>
           <Button icon={<DownloadOutlined />} size="small" onClick={() => handleExport(record)}>Export</Button>
-          <Popconfirm title="确定删除此智能体及其自动管理的技能？" onConfirm={() => handleDelete(record.id)} okText="Confirm" cancelText="Cancel">
+          <Popconfirm title={t('agents.deleteConfirmWithSkills')} onConfirm={() => handleDelete(record.id)} okText="Confirm" cancelText="Cancel">
             <Button icon={<DeleteOutlined />} size="small" danger>Delete</Button>
           </Popconfirm>
         </Space>
@@ -404,7 +404,7 @@ export default function AgentsPage() {
     {
       title: 'Actions', key: 'actions',
       render: (_: any, record: any) => (
-        <Popconfirm title="确定移除此连接？" onConfirm={() => handleDeleteConnection(record.id)} okText="Confirm" cancelText="Cancel">
+        <Popconfirm title={t('agents.removeConnectionConfirm')} onConfirm={() => handleDeleteConnection(record.id)} okText="Confirm" cancelText="Cancel">
           <Button icon={<DeleteOutlined />} size="small" danger>Remove</Button>
         </Popconfirm>
       ),
@@ -467,12 +467,12 @@ export default function AgentsPage() {
       {/* Knowledge QA */}
       <Card
         size="small"
-        title={<HelpLabel label="知识问答" help={t('agents.help.knowledgeCap')} />}
+        title={<HelpLabel label={t('skills.types.knowledge_qa')} help={t('agents.help.knowledgeCap')} />}
         extra={<Button size="small" icon={<PlusOutlined />} onClick={addKnowledge}>Add</Button>}
         style={{ marginBottom: 16 }}
       >
         {capabilities.knowledge.length === 0 && (
-          <Text type="secondary">暂无知识绑定，点击"添加"绑定知识域。</Text>
+          <Text type="secondary">{t('agents.noKnowledgeBinding')}</Text>
         )}
         {capabilities.knowledge.map((k, idx) => (
           <div key={idx} style={{ marginBottom: 12, padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
@@ -480,7 +480,7 @@ export default function AgentsPage() {
               <Select
                 mode="multiple"
                 style={{ flex: 1, minWidth: 200 }}
-                placeholder="选择知识源"
+                placeholder={t('agents.selectKnowledgeSourcePlaceholder')}
                 value={k.source_ids}
                 onChange={v => {
                   updateKnowledge(idx, 'source_ids', v);
@@ -523,19 +523,19 @@ export default function AgentsPage() {
       {/* Workflows */}
       <Card
         size="small"
-        title={<HelpLabel label="工作流" help={t('agents.help.workflowCap')} />}
+        title={<HelpLabel label={t('nav.workflows')} help={t('agents.help.workflowCap')} />}
         extra={<Button size="small" icon={<PlusOutlined />} onClick={addWorkflow}>Add</Button>}
         style={{ marginBottom: 16 }}
       >
         {capabilities.workflows.length === 0 && (
-          <Text type="secondary">暂无工作流绑定，点击"添加"绑定工作流。</Text>
+          <Text type="secondary">{t('agents.noWorkflowBinding')}</Text>
         )}
         {capabilities.workflows.map((w, idx) => (
           <div key={idx} style={{ marginBottom: 12, padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
             <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
               <Select
                 style={{ flex: 1 }}
-                placeholder="选择工作流"
+                placeholder={t('agents.selectWorkflowPlaceholder')}
                 value={w.workflow_id || undefined}
                 onChange={v => updateWorkflow(idx, 'workflow_id', v)}
                 options={workflows.map((wf: any) => ({ value: wf.id, label: `${wf.name}` }))}
@@ -569,12 +569,12 @@ export default function AgentsPage() {
       {/* Tool Calling */}
       <Card
         size="small"
-        title={<HelpLabel label="工具调用" help={t('agents.help.toolCap')} />}
+        title={<HelpLabel label={t('skills.types.tool_call')} help={t('agents.help.toolCap')} />}
         extra={<Button size="small" icon={<PlusOutlined />} onClick={addTool}>Add</Button>}
         style={{ marginBottom: 16 }}
       >
         {capabilities.tools.length === 0 && (
-          <Text type="secondary">暂无工具绑定，点击"添加"绑定工具。</Text>
+          <Text type="secondary">{t('agents.noToolBinding')}</Text>
         )}
         {capabilities.tools.map((toolCap, idx) => (
           <div key={idx} style={{ marginBottom: 12, padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
