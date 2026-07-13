@@ -1,8 +1,8 @@
 # 开发者指南
 
 > 面向准备修改代码、提交 PR 的贡献者。覆盖：提交前必须跑的本地检查、代码规范摘要。
-> 面向用户的安装和使用说明见根目录 [`README.md`](../README.md)（中文）/
-> [`README_en.md`](../README_en.md)（English）。
+> 面向用户的安装和使用说明见根目录 [`README_zh.md`](../README_zh.md)（中文）/
+> [`README.md`](../README.md)（English）。
 
 ---
 

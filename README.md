@@ -2,9 +2,9 @@
 
 # Aezab
 
-自部署的 Agent 基础设施框架 —— 一个 API 背后是编排、混合检索、工作流、工具与全链路审计。
+Self-hosted agent infrastructure — orchestration, hybrid retrieval, workflows, tools and full-trace audit behind one API.
 
-[English](README_en.md) | **中文**
+**English** | [中文](README_zh.md)
 
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square)
@@ -15,26 +15,26 @@
 
 ![Aezab overview](docs/images/aezab-overview.png)
 
-## 为什么选择 Aezab
+## Why Aezab
 
-Aezab 适合需要把 Agent 接入现有业务系统的团队：控制台负责配置和测试，API 负责与你自己的 App、CRM、客服系统、内部后台或自动化流程集成。它是通用的 Agent 基础设施，而不是一款客服软件——同一套编排能力可以配置成智能客服、工单处理或内部助手。当前覆盖 Agent 管理、RAG 检索、工作流引擎、工具调用、ASR、Integrations、Playground 和调用审计，仍在持续迭代。
+Aezab is built for teams that need to embed agents into existing systems: the console handles configuration and testing, while the API integrates with your own apps, CRMs, support desks, internal dashboards, or automation pipelines. It's general-purpose agent infrastructure, not a customer-support product — the same orchestration primitives can become a support bot, a ticketing flow, or an internal assistant. It currently covers agent management, RAG retrieval, the workflow engine, tool calling, ASR, integrations, Playground, and audit traces, and is under active development.
 
-## 功能概览
+## Features
 
-| 模块 | 能力 |
+| Area | Capabilities |
 | --- | --- |
-| Agent Management | 多 Agent 管理、模型选择、能力绑定、Agent 协作。 |
-| Knowledge / RAG | TXT、PDF、DOCX、XLSX、CSV 上传；BM25、向量检索、RRF 融合、可选 reranker。 |
-| Workflow Engine | 顺序步骤、字段收集、文件上传、LLM 校验、失败处理、完成回调。 |
-| Tool Calling | HTTP 工具注册、参数 schema、认证配置、超时、重试、连通性测试。 |
-| Voice / ASR | 浏览器录音、音频上传、DashScope/OpenAI-compatible ASR、自部署 FunASR HTTP。 |
-| Playground | 对话测试、RAG 命中、工具调用、工作流触发、错误和耗时追踪。 |
-| Audit Trace | 每次调用生成 trace id，记录检索、模型、工具、工作流等执行事件。 |
-| Headless API | `/invoke`、`/invoke/stream`、`/asr/transcribe` 等接口用于外部系统集成。 |
+| Agent Management | Multiple agents, model selection, capability binding, agent delegation. |
+| Knowledge / RAG | TXT, PDF, DOCX, XLSX, CSV upload; BM25, vector search, RRF fusion, optional reranking. |
+| Workflow Engine | Sequential steps, field collection, file upload, LLM validation, failure handling, completion callbacks. |
+| Tool Calling | HTTP tool registration, parameter schema, auth config, timeout, retry, connectivity test. |
+| Voice / ASR | Browser recording, audio upload, DashScope/OpenAI-compatible ASR, self-hosted FunASR HTTP. |
+| Playground | Conversation testing, RAG hits, tool calls, workflow triggers, latency, and errors. |
+| Audit Trace | Trace id for each run, with retrieval, model, tool, and workflow events. |
+| Headless API | `/invoke`, `/invoke/stream`, `/asr/transcribe`, and related APIs for external integration. |
 
-## 快速开始
+## Quick Start
 
-环境要求：Docker 24+ 和 Docker Compose v2（唯一硬性要求）；源码运行后端需要 Python 3.10+；前端开发或手动构建需要 Node.js 18+。
+Requirements: Docker 24+ and Docker Compose v2 (the only hard requirement); Python 3.10+ if you run the backend from source; Node.js 18+ for frontend development or manual builds.
 
 ```bash
 git clone https://github.com/AbysenAI/aezab.git
@@ -43,37 +43,37 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-打开 `http://localhost:8000`，控制台会先引导你创建管理员账号并登录；如果还没有任何模型配置和 Agent，会自动弹出三步首次运行向导——选大模型供应商卡片（通义千问 / 智谱 / MiniMax / OpenAI / 本地 Ollama / 自定义，只需填 API Key）→ 测试连接 → 从模板一键创建 Agent → 跳转 Playground 直接测试对话。
+Open `http://localhost:8000`. The console first walks you through creating an admin account and logging in; if there's no model config or agent yet, a three-step first-run wizard appears automatically — pick an LLM provider card (Qwen / Zhipu / MiniMax / OpenAI / local Ollama / custom, just paste an API key) → test the connection → create an agent from a template in one click → jump into the Playground to test it.
 
-需要完全离线的本地模型？改用 `docker compose --profile local-llm up -d`，会额外启动 Ollama 并在首次启动时自动下载一个约 1GB 的本地小模型（`qwen2.5:1.5b`）。
+Want a fully offline local model instead? Use `docker compose --profile local-llm up -d` — it additionally starts Ollama and downloads a small ~1GB local model (`qwen2.5:1.5b`) on first boot.
 
-遇到问题看 [`docs/troubleshooting.md`](docs/troubleshooting.md)。
+Hit a snag? See [`docs/troubleshooting_en.md`](docs/troubleshooting_en.md).
 
-## 集成方式
+## Integrate
 
-所有 API 调用都通过 `X-API-Key` 请求头认证，Key 从控制台 **Integrations** 页面创建（勾选 `invoke` 作用域即可）：
+All API calls are authenticated with an `X-API-Key` header. Create a key from the console's **Integrations** page (scope it to `invoke`):
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/invoke \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: <你的Key>" \
-  -d '{"agent_id": "agent-id", "message": "我要报修厨房漏水", "tenant_id": "default"}'
+  -H "X-API-Key: <your-key>" \
+  -d '{"agent_id": "agent-id", "message": "I need to report a leaking kitchen pipe.", "tenant_id": "default"}'
 ```
 
-流式调用把路径换成 `/api/v1/invoke/stream`（SSE，加 `curl -N` 保留流式输出）。最快的免代码接入方式是嵌入式聊天 Widget：把一段 `<script>` 标签贴进你的网页即可获得一个悬浮聊天气泡，完整可运行示例见 `examples/widget-demo.html`。
+For streaming, swap the path for `/api/v1/invoke/stream` (SSE; add `curl -N` to keep the stream open). The fastest no-code integration is the embeddable chat widget: drop a `<script>` tag into your page to get a floating chat bubble — a full runnable example is in `examples/widget-demo.html`.
 
-Integrations 页面同时提供 ASR 语音转写、Outbound Tools（Agent 调用你的业务 API）、Workflow Webhooks（工作流完成或关键步骤完成后回调，带 HMAC 签名）、以及 Trace & Debug 面板，供开发联调使用。
+The Integrations page also covers ASR transcription, Outbound Tools (agents calling your own backend APIs), Workflow Webhooks (HMAC-signed callbacks when a workflow completes or reaches a key step), and a Trace & Debug panel for developer troubleshooting.
 
-完整交互式文档见 `http://localhost:8000/docs`（Swagger UI）；SDK、Webhook 签名验证、限流/重试语义等细节见 [`docs/integration.md`](docs/integration.md)。
+The full interactive API reference is at `http://localhost:8000/docs` (Swagger UI); SDKs, webhook signature verification, and rate-limit/retry semantics are in [`docs/integration.md`](docs/integration.md).
 
-## 使用场景
+## Use Cases
 
-- 智能客服：基于产品文档、服务政策、售后手册回答问题。
-- 工单处理：报修、申请、审批、表单收集、订单查询、CRM 更新。
-- 内部助手：制度问答、流程办理、系统查询、跨部门任务分发。
-- 行业方案：在客户环境中部署，接入客户自己的模型、数据和业务 API。
+- Customer support: answer from product docs, service policies, and support manuals.
+- Ticketing: repairs, applications, approvals, form collection, order lookup, and CRM updates.
+- Internal operations: policy Q&A, process execution, system lookup, and cross-team routing.
+- Industry deployments: run in a customer environment with their own models, data, and business APIs.
 
-## 架构
+## Architecture
 
 ```text
 aezab/
@@ -85,11 +85,11 @@ aezab/
   pyproject.toml
 ```
 
-Aezab 使用 conversation-first runtime：Agent 绑定的能力（知识库、工作流、工具、Agent 协作）会转换为 function definitions，由模型根据对话上下文自行判断是否调用，没有单独的意图路由/分类层。触发逻辑和调优建议见 [`docs/configuration.md`](docs/configuration.md)。
+Aezab uses a conversation-first runtime: an agent's bound capabilities (knowledge, workflows, tools, agent delegation) are converted into function definitions, and the model decides which to call from conversation context — there's no separate intent router or classifier layer. Triggering behavior and tuning notes live in [`docs/configuration_en.md`](docs/configuration_en.md).
 
-## 源码运行
+## Run From Source
 
-后端：
+Backend:
 
 ```bash
 python -m venv venv
@@ -100,9 +100,9 @@ cp .env.example .env
 python -m uvicorn server.main:app --host 0.0.0.0 --port 8000
 ```
 
-首次打开控制台同样会引导创建管理员账号并弹出首次运行向导；数据库和向量索引每 24 小时自动备份到 `./data/backups/`，源码运行和 Docker 部署共用同一套逻辑。
+The first time you open the console it also walks you through creating an admin account and shows the first-run setup wizard. The database and vector index are backed up automatically every 24 hours to `./data/backups/` — running from source and running via Docker share the same logic.
 
-前端构建：
+Build the frontend:
 
 ```bash
 cd console
@@ -111,9 +111,9 @@ npm run build
 cp -r dist/. ../static/
 ```
 
-同步产物到 `static/` 时务必用合并式拷贝（如上），不要先清空目标目录——`static/widget.js` 是独立维护的嵌入脚本，必须在控制台构建后继续保留，细节见 [`docs/development.md`](docs/development.md)。
+When syncing build output into `static/`, always merge-copy (as above) rather than emptying the target directory first — `static/widget.js` is hand-maintained and must survive console builds; see [`docs/development.md`](docs/development.md) for details.
 
-前端开发：
+Frontend development:
 
 ```bash
 cd console
@@ -121,22 +121,64 @@ npm install
 npm run dev
 ```
 
-## 部署与运维
+## Deployment
 
-- SQLite 适合开发和小规模试用；生产推荐 PostgreSQL、Redis、HTTPS、反向代理和备份策略。
-- API Key 和模型密钥应放在环境变量或部署平台的密钥管理系统中。
-- 数据库和向量索引每 24 小时自动备份到 `./data/backups/`，服务启动时基于 Alembic 自动完成数据库结构迁移，无需运维手工 `ALTER TABLE`。
+- SQLite is suitable for development and small trials; PostgreSQL, Redis, HTTPS, reverse proxying, and a backup strategy are recommended for production.
+- API keys and model credentials should be stored in environment variables or a deployment secret manager.
+- The database and vector index are backed up automatically every 24 hours to `./data/backups/`; database schema migrations run automatically at startup via Alembic — no manual `ALTER TABLE` needed.
 
-完整生产部署清单（单进程架构限制、SSE 反向代理配置、Widget 安全等）见 [`docs/deployment.md`](docs/deployment.md)。
+The full production deployment checklist (single-process architecture constraints, SSE reverse-proxy config, widget security) is in [`docs/deployment.md`](docs/deployment.md).
 
-## 文档索引
+## Example: a knowledge-base support bot in 5 minutes
 
-- [`docs/configuration.md`](docs/configuration.md) —— 模型、Agent、能力触发、知识库上传配置指南。
-- [`docs/troubleshooting.md`](docs/troubleshooting.md) —— 常见问题自查。
-- [`docs/deployment.md`](docs/deployment.md) —— 生产部署清单。
-- [`docs/integration.md`](docs/integration.md) —— SDK / API / Webhook / Widget 集成细节。
-- [`docs/migrations.md`](docs/migrations.md) —— 数据库迁移（Alembic）。
-- [`docs/development.md`](docs/development.md) —— 开发规范与本地检查（面向贡献者）。
+Quick Start above just gets the service running; here's the full path from zero to wired into your business, using a "knowledge-base support bot" as the example.
+
+1. **Clone and start**:
+
+   ```bash
+   git clone https://github.com/AbysenAI/aezab.git
+   cd aezab
+   cp .env.example .env
+   docker compose up -d --build
+   ```
+
+   By default this only starts `server` and `redis` — lightweight, fast to boot, no model download. Open the console and the first-run wizard walks you through connecting a cloud model (recommended). Check readiness with `curl http://localhost:8000/health`.
+
+   If you want a fully offline local model instead, use:
+
+   ```bash
+   docker compose --profile local-llm up -d
+   ```
+
+   This additionally starts `ollama`: on first boot, `ollama-init` automatically downloads a small ~1GB local model (`qwen2.5:1.5b`) so the console has a working model out of the box.
+
+2. **Open the console and follow the wizard**: visit `http://localhost:8000`. On first open you'll be guided through creating an admin account and logging in. If there's no model config or agent yet, a three-step setup wizard appears automatically — pick an LLM provider card (Qwen / Zhipu / MiniMax / OpenAI / local Ollama / custom, just paste an API key) → test the connection → create an agent from a template in one click ("Knowledge Support", "Repair Ticket", or "Booking") → jump into the Playground to test it. Pick "Knowledge Support" here.
+
+3. **Upload knowledge**: open the **Knowledge** page and upload your own FAQ / product docs for the agent you just created (TXT / MD / PDF / DOCX / CSV / XLSX supported — see the "Knowledge Upload Standard" section in [`docs/configuration_en.md`](docs/configuration_en.md)).
+
+4. **Wire it into your site or your backend**: open **Integrations**, create an API key scoped to `invoke` only, then pick either path (or both):
+
+   - **Web widget**: copy a `<script>` snippet into your website — it renders a floating chat bubble. A full runnable example is in `examples/widget-demo.html`.
+   - **API integration (the primary path)**: call the Headless API straight from your own product's backend to embed the agent into an app, CRM, support desk, or any business process:
+
+     ```bash
+     curl -X POST "http://localhost:8000/api/v1/invoke" \
+       -H "X-API-Key: <your-key>" -H "Content-Type: application/json" \
+       -d '{"agent_id": "<agent_id>", "message": "Hello"}'
+     ```
+
+   SSE streaming, the Python/JS SDKs, file upload, and retry semantics are all covered in [`docs/integration.md`](docs/integration.md) (widget attribute reference in section 9).
+
+> This is only one example of what the framework can do. Swap the template and the same flow becomes a repair-ticket bot or a booking assistant. Go further and you can compose workflows, tool calls, and multi-agent delegation into almost any business process — order lookup, internal knowledge assistants, approval flows, and more. Aezab is general-purpose agent infrastructure, not a customer-support product.
+
+## Documentation
+
+- [`docs/configuration_en.md`](docs/configuration_en.md) — model, agent, capability-triggering, and knowledge-upload configuration guide.
+- [`docs/troubleshooting_en.md`](docs/troubleshooting_en.md) — common issues.
+- [`docs/deployment.md`](docs/deployment.md) — production deployment checklist.
+- [`docs/integration.md`](docs/integration.md) — SDK / API / webhook / widget integration details.
+- [`docs/migrations.md`](docs/migrations.md) — database migrations (Alembic).
+- [`docs/development.md`](docs/development.md) — dev conventions and local checks (for contributors; Chinese only).
 
 ## License
 

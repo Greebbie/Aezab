@@ -2,7 +2,7 @@
 
 > For readers who already have Aezab running and need to configure models, agents, capability
 > triggering, and knowledge upload. Installation and quick start: root
-> [`README_en.md`](../README_en.md). 中文版：[`docs/configuration.md`](./configuration.md)。
+> [`README.md`](../README.md). 中文版：[`docs/configuration.md`](./configuration.md)。
 
 ---
 

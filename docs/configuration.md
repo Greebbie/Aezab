@@ -1,7 +1,7 @@
 # 配置指南
 
 > 面向已经把 Aezab 跑起来、需要配置模型、Agent、能力触发和知识库的用户。安装和快速上手见
-> 根目录 [`README.md`](../README.md)。English version: [`docs/configuration_en.md`](./configuration_en.md)。
+> 根目录 [`README_zh.md`](../README_zh.md)。English version: [`docs/configuration_en.md`](./configuration_en.md)。
 
 ---
 
