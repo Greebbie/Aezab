@@ -4,10 +4,6 @@
 
 自部署 Agent 构建框架，提供 Web 控制台和 API-first runtime，用于管理 Agent、知识库、工作流、外部工具、语音输入和调用审计。
 
-> **命名说明**：Aezab 是当前的对外品牌名；`HlAB`（Headless AI Agent Builder）是历史代号，
-> 环境变量前缀 `AEZAB_`（`HLAB_` 作为向后兼容别名保留）、SDK 包名 `hlab-client`、部分代码
-> 注释和文件名仍沿用 HlAB——两者是同一个项目，不是两个不同的产品。
-
 Aezab 适合需要把 Agent 接入现有业务系统的团队。控制台负责配置和测试，API 负责和客户自己的 App、CRM、客服系统、内部后台或自动化流程集成。当前覆盖 Agent 管理、RAG 检索、Workflow 引擎、Tool Calling、ASR、Integrations、Playground 和调用审计，仍在持续迭代。
 
 ## ⚡ 5 分钟上线
