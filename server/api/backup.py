@@ -5,8 +5,9 @@ Admin-only for the whole router: a backup zip embeds the full local
 database — including third-party LLM/Embedding/ASR credentials stored in
 plaintext (see docs/deployment.md "已知限制") — plus the JWT `secret_key`,
 so anyone who can list or download backups can fully impersonate the
-deployment. `require_role("admin")` mirrors the same gate used on
-`/auth/api-keys` (server/api/auth.py); in `disable_auth` (dev) mode
+deployment. Both admin role and management scope are required; an
+invoke-only integration key must never inherit backup access from its owner.
+In `disable_auth` (dev) mode
 `get_current_user` returns a mock admin user, so this never blocks local
 development.
 """
@@ -21,11 +22,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from server.engine.backup import create_backup, list_backups, resolve_backup_path
-from server.middleware.auth import require_role
+from server.middleware.auth import require_role, require_scope
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(require_role("admin"))])
+router = APIRouter(dependencies=[Depends(require_scope("manage")), Depends(require_role("admin"))])
 
 
 @router.get("/")

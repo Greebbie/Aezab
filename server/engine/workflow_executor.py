@@ -10,16 +10,21 @@ import re
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from server.models.agent import Agent
 from server.models.workflow import WorkflowStep
+from server.models.tool import ToolDefinition
 from server.models.session import ConversationSession
 from server.engine.tool_gateway import ToolGateway, ToolInvocationError
 from server.engine.audit_logger import AuditLogger
 from server.schemas.invoke import WorkflowCard
+from server.schemas.decision import DecisionConfig
+from server.engine.decision_service import decide, DecisionUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +48,42 @@ BUILTIN_VALIDATORS = {
 }
 
 
-def validate_field(value: str, field_def: dict) -> str | None:
+def _is_empty_field(value: Any) -> bool:
+    return value is None or value == "" or value == []
+
+
+def _confirmation_intent(text: str) -> bool | None:
+    """Only an explicit affirmative can open a configured confirmation gate."""
+    text = text.strip().lower().rstrip(".!。！")
+    if text in {"不", "n", "no"} or any(word in text for word in (
+        "取消", "不是", "不对", "不行", "重新", "修改", "cancel", "不确认", "不要", "不同意", "not", "don't",
+    )):
+        return False
+    if text in {"y", "yes", "ok", "sure", "确认", "确定", "是", "好", "对", "行", "可以", "没问题", "正确", "confirm"}:
+        return True
+    return None
+
+
+def validate_field(value: Any, field_def: dict) -> str | None:
     """Return error message or None if valid."""
     ftype = field_def.get("field_type", "text")
     required = field_def.get("required", True)
 
-    if not value and required:
+    empty = _is_empty_field(value)
+    if empty and required:
         return f"字段 '{field_def.get('label', '')}' 为必填项"
-    if not value:
+    if empty:
         return None
+
+    if ftype in {"select", "multi_select"}:
+        allowed = {str(option.get("value")) for option in field_def.get("options") or []}
+        values = value if ftype == "multi_select" and isinstance(value, list) else [value]
+        if ftype == "multi_select" and not isinstance(value, list):
+            return f"'{field_def.get('label', '')}' 必须选择有效选项"
+        if any(str(item) not in allowed for item in values):
+            return f"'{field_def.get('label', '')}' 包含无效选项"
+
+    value = str(value)
 
     # Built-in type check
     if ftype in BUILTIN_VALIDATORS:
@@ -61,7 +93,11 @@ def validate_field(value: str, field_def: dict) -> str | None:
     # Custom regex
     rule = field_def.get("validation_rule")
     if rule:
-        if not re.match(rule, value):
+        try:
+            matched = re.match(rule, value)
+        except (re.error, TypeError):
+            return f"'{field_def.get('label', '')}' 校验规则配置无效"
+        if not matched:
             return f"'{field_def.get('label', '')}' 不符合校验规则"
 
     return None
@@ -144,10 +180,11 @@ class WorkflowExecutor:
         # Save step snapshot for potential rollback
         state_snap = session.workflow_state or {}
         snapshots = list(state_snap.get("snapshots", []))
-        snapshots.append({
-            "step_index": current_step_index,
-            "collected_data": dict(collected),
-        })
+        if not snapshots or snapshots[-1]["step_index"] != current_step_index:
+            snapshots.append({
+                "step_index": current_step_index,
+                "collected_data": dict(collected),
+            })
         # Keep only last 5 snapshots to avoid unbounded growth
         if len(snapshots) > 5:
             snapshots = snapshots[-5:]
@@ -161,7 +198,32 @@ class WorkflowExecutor:
         elif step.step_type == "validate":
             return await self._handle_validate(step, steps, current_step_index, collected, session, _depth)
         elif step.step_type == "tool_call":
+            if step.requires_human_confirm:
+                # This is confirmation by the requester, not staff authorization.
+                # First entry always shows the gate; a prior collect message
+                # containing 'confirm' must not authorize a subsequent write.
+                state = dict(session.workflow_state or {})
+                intent = _confirmation_intent(user_input)
+                if state.get("pending_confirmation_step") != step.id or intent is not True:
+                    if state.get("pending_confirmation_step") == step.id and intent is False:
+                        state.pop("pending_confirmation_step", None)
+                        session.workflow_state = state
+                        return self._perform_rollback(session, steps, current_step_index=current_step_index)
+                    state["pending_confirmation_step"] = step.id
+                    session.workflow_state = state
+                    flag_modified(session, "workflow_state")
+                    card = self._make_card(step, steps, current_step_index, collected_data={
+                        key: value for key, value in collected.items() if not key.startswith("_")
+                    })
+                    card.step_type = "confirm"
+                    card.prompt = step.prompt_template or '请确认是否执行此操作。回复“确认”继续。'
+                    return WorkflowStepResult(status="waiting_input", message=card.prompt, card=card)
+                state.pop("pending_confirmation_step", None)
+                session.workflow_state = state
+                flag_modified(session, "workflow_state")
             return await self._handle_tool_call(step, steps, current_step_index, collected, session, _depth)
+        elif step.step_type == "decision":
+            return await self._handle_decision(step, steps, current_step_index, collected, session, _depth)
         elif step.step_type == "confirm":
             return await self._handle_confirm(step, steps, current_step_index, user_input, collected, session, _depth)
         elif step.step_type == "human_review":
@@ -187,7 +249,7 @@ class WorkflowExecutor:
         # say something.
         effective_form_data = form_data
         if not effective_form_data and (user_input or "").strip():
-            extracted = await self._extract_fields_from_text(user_input, fields, collected)
+            extracted = await self._extract_fields_from_text(user_input, fields, collected, session)
             if extracted is None:
                 # LLM unavailable or extraction failed outright — never crash
                 # the workflow, fall back to today's re-prompt behavior.
@@ -220,7 +282,7 @@ class WorkflowExecutor:
                 ftype = field_def.get("field_type", "text")
 
                 if fname not in effective_form_data:
-                    if not collected.get(fname) and field_def.get("required", True):
+                    if _is_empty_field(collected.get(fname)) and field_def.get("required", True):
                         missing_labels.append(field_def.get("label") or fname)
                     continue
 
@@ -228,7 +290,7 @@ class WorkflowExecutor:
                 if ftype == "file":
                     err = self._validate_file_field(val, field_def)
                 else:
-                    err = validate_field(str(val) if val else "", field_def)
+                    err = validate_field(val, field_def)
                 if err:
                     errors.append(err)
                 else:
@@ -241,9 +303,9 @@ class WorkflowExecutor:
                     continue
                 fname = field_def.get("name", "")
                 val = collected.get(fname, "")
-                if not val:
+                if _is_empty_field(val):
                     continue
-                llm_err = await self._llm_validate_field(val, field_def)
+                llm_err = await self._llm_validate_field(val, field_def, session)
                 if llm_err:
                     errors.append(llm_err)
                     collected.pop(fname, None)
@@ -265,7 +327,7 @@ class WorkflowExecutor:
             if missing_labels:
                 saved = [
                     (f.get("label") or f.get("name", ""))
-                    for f in fields if collected.get(f.get("name", ""))
+                    for f in fields if not _is_empty_field(collected.get(f.get("name", "")))
                 ]
                 saved_note = f"已记录：{'、'.join(saved)}。\n" if saved else ""
                 return WorkflowStepResult(
@@ -312,8 +374,21 @@ class WorkflowExecutor:
 
         return None
 
+    async def _get_llm_for_session(self, session: ConversationSession):
+        from server.engine.llm_adapter import get_llm_adapter_for_agent
+
+        agent = await self.db.scalar(select(Agent).where(
+            Agent.id == session.agent_id,
+            Agent.tenant_id == session.tenant_id,
+            Agent.enabled.is_(True),
+        ))
+        if agent is None:
+            raise ValueError("Session agent not found or disabled")
+        return await get_llm_adapter_for_agent(agent, self.db)
+
     async def _extract_fields_from_text(
         self, user_input: str, fields: list[dict], collected: dict[str, Any],
+        session: ConversationSession,
     ) -> dict[str, Any] | None:
         """Ask the LLM to extract field values from a free-form chat message.
 
@@ -327,8 +402,8 @@ class WorkflowExecutor:
           never crash the workflow because of an LLM hiccup.
         """
         try:
-            from server.engine.llm_adapter import LLMMessage, get_llm_adapter
-            llm = get_llm_adapter()
+            from server.engine.llm_adapter import LLMMessage
+            llm = await self._get_llm_for_session(session)
         except Exception as e:
             logger.warning("LLM unavailable for field extraction: %s", e)
             return None
@@ -412,15 +487,17 @@ class WorkflowExecutor:
             return None
         return data
 
-    async def _llm_validate_field(self, value: str, field_def: dict) -> str | None:
+    async def _llm_validate_field(
+        self, value: str, field_def: dict, session: ConversationSession,
+    ) -> str | None:
         """Use LLM to semantically validate a field value."""
         prompt = field_def.get("llm_validate_prompt")
         if not prompt:
-            return None
+            return f"'{field_def.get('label', '')}' 的语义校验规则未配置，请联系管理员。"
 
         try:
-            from server.engine.llm_adapter import LLMMessage, get_llm_adapter
-            llm = get_llm_adapter()
+            from server.engine.llm_adapter import LLMMessage
+            llm = await self._get_llm_for_session(session)
             validation_prompt = f"""{prompt}
 
 用户输入: {value}
@@ -432,7 +509,9 @@ class WorkflowExecutor:
                 max_tokens=100,
                 temperature=0.0,
             )
-            result = resp.content.strip()
+            result = (resp.content or "").strip()
+            if not result:
+                raise ValueError("Semantic validation returned no result")
             if result.upper() in ("OK", "有效", "正确", "通过"):
                 return None
             return f"'{field_def.get('label', '')}': {result}"
@@ -440,11 +519,11 @@ class WorkflowExecutor:
             logger.warning(f"LLM validation failed for field '{field_def.get('name')}': {e}")
             if self.audit:
                 self.audit.log("workflow_step", workflow_meta={
-                    "status": "llm_validation_skipped",
+                    "status": "llm_validation_failed",
                     "field": field_def.get("name"),
                     "error": str(e),
                 })
-            return None  # Fail open: if LLM validation fails, don't block the user
+            return f"'{field_def.get('label', '')}' 暂时无法完成语义校验，请稍后重试。"
 
     async def _handle_validate(self, step, steps, idx, collected, session, _depth: int = 0) -> WorkflowStepResult:
         """Run validation rules on collected data."""
@@ -459,6 +538,8 @@ class WorkflowExecutor:
                     errors.append(f"字段 {field_name} 格式不正确")
 
         if errors:
+            if step.fallback_step_id:
+                return await self._follow_fallback(step, steps, session, _depth)
             if step.on_failure == "rollback":
                 return self._perform_rollback(session, steps, current_step_index=idx)
             return WorkflowStepResult(
@@ -492,9 +573,25 @@ class WorkflowExecutor:
         if idempotency_key:
             idem_value = f"{idempotency_key}:{step.id}"
             extra_headers = {"X-Idempotency-Key": idem_value}
-            tool_input = {**tool_input, "idempotency_key": idem_value}
 
         try:
+            tool_schema: dict[str, Any] = {}
+            if self.db is not None:
+                owned_tool = await self.db.scalar(select(ToolDefinition).where(
+                    ToolDefinition.id == step.tool_id,
+                    ToolDefinition.tenant_id == session.tenant_id,
+                    ToolDefinition.enabled.is_(True),
+                ))
+                if owned_tool is None:
+                    raise ToolInvocationError(step.tool_id, "Tool not found or disabled", recoverable=False)
+                tool_schema = owned_tool.input_schema or {}
+            # Preserve legacy body keys only where the tool schema permits them;
+            # strict tools still receive the stable idempotency header.
+            if idempotency_key and (
+                tool_schema.get("additionalProperties") is not False
+                or "idempotency_key" in (tool_schema.get("properties") or {})
+            ):
+                tool_input = {**tool_input, "idempotency_key": idem_value}
             result = await self.tool_gw.invoke(step.tool_id, tool_input, extra_headers=extra_headers)
             # Store tool output
             output_mapping = tool_config.get("output_mapping", {})
@@ -519,6 +616,8 @@ class WorkflowExecutor:
                     "status": "tool_failed", "error": str(e),
                 })
 
+            if step.fallback_step_id:
+                return await self._follow_fallback(step, steps, session, _depth)
             if step.on_failure == "skip":
                 return await self._advance(steps, idx, session, _depth)
             elif step.on_failure == "escalate":
@@ -556,22 +655,74 @@ class WorkflowExecutor:
                     card=self._make_card(step, steps, idx),
                 )
 
+    async def _handle_decision(self, step, steps, idx, collected, session, _depth=0) -> WorkflowStepResult:
+        """A semantic judgment selects data, never authorizes an external action."""
+        metadata = {"step_id": step.id, "provider": "typesafe", "accepted": False}
+        try:
+            config = DecisionConfig.model_validate(step.tool_config or {})
+        except ValidationError:
+            return WorkflowStepResult(status="error", message="判定节点配置无效，请联系管理员。")
+
+        # Remove a previous accepted value before a repeated or failed judgment.
+        collected.pop(config.result_key, None)
+        metadata.update({
+            "input_fields": config.input_fields,
+            "min_confidence": config.min_confidence,
+            "min_probability": config.min_probability,
+        })
+        try:
+            result = await decide(config, collected)
+            accepted = result.accepted(config)
+            metadata.update({
+                "model": result.model, "choice": result.choice,
+                "confidence": result.confidence, "probabilities": result.probabilities,
+                "latency_ms": result.latency_ms, "accepted": accepted,
+                "reason": "accepted" if accepted else (
+                    "no_match" if result.choice == "other" else "below_threshold"
+                ),
+            })
+            if accepted:
+                collected[config.result_key] = result.choice
+        except DecisionUnavailable as exc:
+            metadata["reason"] = str(exc)
+
+        state = dict(session.workflow_state or {})
+        state["decisions"] = {**state.get("decisions", {}), step.id: metadata}
+        session.workflow_state = state
+        session.collected_data = collected
+        flag_modified(session, "workflow_state")
+        flag_modified(session, "collected_data")
+        if self.audit:
+            self.audit.log("workflow_decision", workflow_meta=metadata)
+        if metadata["accepted"]:
+            return await self._advance(steps, idx, session, _depth)
+        return await self._follow_fallback(step, steps, session, _depth, decision=True)
+
+    async def _follow_fallback(self, step, steps, session, _depth, decision=False):
+        target = self._resolve_step_target(steps, step.fallback_step_id)
+        if target is None:
+            return WorkflowStepResult(status="error", message="流程缺少有效的失败去向，已停止执行。")
+        fallback = steps[target]
+        if decision and not (
+            (fallback.step_type == "collect" and fallback.fields)
+            or fallback.step_type == "human_review"
+            or (fallback.step_type == "complete" and not (fallback.tool_config or {}).get("webhook_enabled"))
+        ):
+            return WorkflowStepResult(status="error", message="判定失败去向必须补充信息、暂停或结束。")
+        if self.audit:
+            self.audit.log("workflow_branch", workflow_meta={
+                "step_id": step.id, "target_step_id": fallback.id, "reason": "fallback",
+            })
+        return await self._enter_step(steps, target, session, _depth)
+
     async def _handle_confirm(self, step, steps, idx, user_input, collected, session, _depth: int = 0) -> WorkflowStepResult:
         """Ask user to confirm before proceeding."""
-        text = user_input.strip().lower()
-
-        # Check for negative/cancel keywords first. Single-letter choices must
-        # be exact matches; otherwise "confirm" contains "n" and rolls back.
-        negative_exact = {"不", "n", "no"}
-        negative_contains = {"取消", "不是", "不对", "不行", "重新", "修改", "cancel"}
-        if text in negative_exact or any(kw in text for kw in negative_contains):
+        intent = _confirmation_intent(user_input)
+        if intent is False:
             # Roll back to previous collect step
             return self._perform_rollback(session, steps, current_step_index=idx)
 
-        # Check for positive/confirm keywords.
-        positive_exact = {"y", "yes", "ok", "sure"}
-        positive_contains = {"确认", "确定", "是", "好", "对", "行", "可以", "没问题", "正确", "confirm"}
-        if text in positive_exact or any(kw in text for kw in positive_contains):
+        if intent is True:
             return await self._advance(steps, idx, session, _depth)
 
         # No clear intent — re-prompt
@@ -798,6 +949,15 @@ class WorkflowExecutor:
                             "Workflow branching: step '%s' -> '%s' (index %d)",
                             current_step.name, goto, next_idx,
                         )
+                    else:
+                        return WorkflowStepResult(status="error", message="分支指向不存在的步骤，已停止执行。")
+
+        if self.audit:
+            self.audit.log("workflow_branch", workflow_meta={
+                "step_id": current_step.id,
+                "target_step_id": steps[next_idx].id if next_idx < len(steps) else None,
+                "reason": "next",
+            })
 
         if next_idx >= len(steps):
             session.workflow_state = {
@@ -829,10 +989,14 @@ class WorkflowExecutor:
                 return WorkflowStepResult(status="completed", message=msg, card=completion_card)
             return WorkflowStepResult(status="completed", message="流程已全部完成！", card=completion_card)
 
-        # Not yet complete — advance step index
+        return await self._enter_step(steps, next_idx, session, _depth)
+
+    async def _enter_step(self, steps, next_idx, session, _depth=0):
+        """Enter a saved connection with the same semantics as linear advancement."""
         session.workflow_state = {
             **(session.workflow_state or {}),
             "current_step_index": next_idx,
+            "status": "in_progress",
         }
         flag_modified(session, "workflow_state")
 
@@ -840,14 +1004,14 @@ class WorkflowExecutor:
 
         # Auto-execute non-interactive steps (with depth guard)
         # Also auto-execute collect steps with no fields (display-only steps)
-        is_auto = next_step.step_type in ("validate", "tool_call", "complete", "human_review")
+        is_auto = next_step.step_type in ("validate", "tool_call", "decision", "complete", "human_review")
         if not is_auto and next_step.step_type == "collect" and not (next_step.fields or []):
             is_auto = True
         if is_auto:
             return await self.process_step(session, "", None, _depth=_depth + 1)
 
         return WorkflowStepResult(
-            status="in_progress",
+            status="waiting_input",
             message=next_step.prompt_template or f"请继续: {next_step.name}",
             card=self._make_card(next_step, steps, next_idx),
         )
@@ -860,7 +1024,13 @@ class WorkflowExecutor:
         - A step name (string match)
         - A step order number (as string or int)
         """
-        # Try matching by step name first
+        if target is None:
+            return None
+        # Stable IDs survive display-name changes and step reordering.
+        for i, step in enumerate(steps):
+            if step.id == target:
+                return i
+        # Legacy definitions can still reference names and order numbers.
         for i, step in enumerate(steps):
             if step.name == target:
                 return i
@@ -890,22 +1060,25 @@ class WorkflowExecutor:
                 message="无法回退：没有可用的步骤快照。",
             )
 
-        # Pop the last snapshot (which is the current step's snapshot)
-        snapshots.pop()
-
+        # Repeated prompts and automatic steps are not useful edit targets.
+        # Never replay an external action simply because confirmation was denied.
+        while snapshots:
+            previous_idx = snapshots[-1]["step_index"]
+            if (previous_idx != current_step_index and 0 <= previous_idx < len(steps)
+                    and steps[previous_idx].step_type == "collect" and steps[previous_idx].fields):
+                break
+            snapshots.pop()
         if not snapshots:
-            # No previous snapshot — go back to step 0
-            target_idx = 0
-            restored_data: dict[str, Any] = {}
-        else:
-            # Restore the previous snapshot
-            prev = snapshots[-1]
-            target_idx = prev["step_index"]
-            restored_data = dict(prev.get("collected_data", {}))
+            return WorkflowStepResult(status="error", message="无法回退：没有可重新填写的步骤。")
+        prev = snapshots[-1]
+        target_idx = prev["step_index"]
+        restored_data: dict[str, Any] = dict(prev.get("collected_data", {}))
 
         # Update session state
         state["current_step_index"] = target_idx
         state["snapshots"] = snapshots
+        state["status"] = "in_progress"
+        state.pop("pending_confirmation_step", None)
         session.workflow_state = state
         session.collected_data = restored_data
         flag_modified(session, "workflow_state")

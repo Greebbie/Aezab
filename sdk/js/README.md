@@ -1,19 +1,22 @@
 # hlab-client
 
-Official JavaScript/TypeScript SDK for the [HlAB](https://github.com/AbysenAI/aezab) Headless AI Agent
-Platform. Zero runtime dependencies — built on the browser/Node 18+ built-in `fetch` and
+JavaScript/TypeScript SDK for [Aezab](https://github.com/Greebbie/Aezab).
+Zero runtime dependencies — built on the browser/Node 18+ built-in `fetch` and
 `ReadableStream`.
 
 Full API reference and SSE event contract: see
-[`docs/integration.md`](https://github.com/AbysenAI/aezab/blob/main/docs/integration.md) in the main repo.
+[`docs/integration.md`](https://github.com/Greebbie/Aezab/blob/main/docs/integration.md) in the main repo.
 
 ## Install
 
 This SDK is not yet published to npm. Install it from source:
 
 ```bash
-npm install ./sdk/js                        # from a clone of the main repo, or
-cd sdk/js && npm install && npm run build    # build locally and import from dist/
+cd sdk/js
+npm install              # installs TypeScript and builds dist/
+npm run build            # rebuild after editing src/
+# From your application directory:
+npm install /path/to/Aezab/sdk/js
 ```
 
 Once published, it will be installable with:
@@ -59,7 +62,7 @@ const uploaded = await client.uploadFile(fileBlob, "quote.pdf");
 ## Authentication
 
 All requests are authenticated with an `X-API-Key` header (pass it via the `apiKey` client option).
-Create a scoped key via the HlAB console or `POST /api/v1/auth/api-keys` — use an `invoke`-scoped key
+Create a scoped key via the Aezab console or `POST /api/v1/auth/api-keys` — use an `invoke`-scoped key
 for this SDK, never a `manage`-scoped key, in any browser-exposed code.
 
 ## Build

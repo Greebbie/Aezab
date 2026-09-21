@@ -1,18 +1,18 @@
 {
   "name": "hlab-client",
   "version": "0.1.0",
-  "description": "Official JavaScript/TypeScript SDK for the HlAB Headless AI Agent Platform",
+  "description": "JavaScript/TypeScript SDK for Aezab task agents",
   "type": "module",
   "license": "MIT",
-  "author": "HlAB",
-  "homepage": "https://github.com/AbysenAI/aezab",
+  "author": "Aezab contributors",
+  "homepage": "https://github.com/Greebbie/Aezab",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AbysenAI/aezab.git",
+    "url": "https://github.com/Greebbie/Aezab.git",
     "directory": "sdk/js"
   },
   "bugs": {
-    "url": "https://github.com/AbysenAI/aezab/issues"
+    "url": "https://github.com/Greebbie/Aezab/issues"
   },
   "keywords": [
     "hlab",
@@ -31,6 +31,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {},

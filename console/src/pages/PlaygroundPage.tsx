@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   Button,
+  Alert,
   Collapse,
   Empty,
   Input,
@@ -29,7 +31,7 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { agentApi, invokeApi, auditApi, asrApi, getToken, ApiError } from '../api';
+import { agentApi, invokeApi, auditApi, asrApi, sessionsApi, getToken, ApiError } from '../api';
 import { friendlyError } from '../utils/friendlyError';
 
 const { TextArea } = Input;
@@ -87,6 +89,7 @@ interface TraceEvent {
   timestamp?: string;
   latency_ms?: number;
   event_data?: any;
+  workflow_meta?: Record<string, unknown> | null;
   retrieval_hits?: any;
   llm_meta?: any;
   tool_meta?: any;
@@ -102,6 +105,8 @@ const EVENT_COLORS: Record<string, string> = {
   llm_call: 'purple',
   tool_call: 'orange',
   workflow_step: 'geekblue',
+  workflow_decision: 'gold',
+  workflow_branch: 'cyan',
   response: 'blue',
   escalation: 'red',
   error: 'red',
@@ -118,6 +123,9 @@ const EVENT_COLORS: Record<string, string> = {
 
 export default function PlaygroundPage() {
   const { t } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linkedSession = searchParams.get('session');
+  const linkedAgent = searchParams.get('agent');
 
   /* state — agents */
   const [agents, setAgents] = useState<any[]>([]);
@@ -133,6 +141,11 @@ export default function PlaygroundPage() {
   const [recording, setRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionUserId, setSessionUserId] = useState('anonymous');
+  const [sessionStatus, setSessionStatus] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [olderMessages, setOlderMessages] = useState(false);
   const [useStreaming, setUseStreaming] = useState(true);
 
   /* state — workflow form */
@@ -148,6 +161,10 @@ export default function PlaygroundPage() {
   /* refs */
   const chatEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const conversationEpoch = useRef(0);
+  const currentSessionRef = useRef<string | null>(null);
+  const restoreTranslation = useRef(t);
+  restoreTranslation.current = t;
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
   const recordingStreamRef = useRef<MediaStream | null>(null);
@@ -156,19 +173,66 @@ export default function PlaygroundPage() {
   /* ── Load agents on mount ──────────────────────────── */
 
   useEffect(() => {
+    let cancelled = false;
     setAgentsLoading(true);
     agentApi
       .list()
       .then((res) => {
+        if (cancelled) return;
         const list = Array.isArray(res.data) ? res.data : [];
         setAgents(list);
-        if (list.length > 0 && !selectedAgentId) {
-          setSelectedAgentId(list[0].id);
+        if (list.length > 0) {
+          const preferred = list.find((agent) => agent.id === linkedAgent);
+          setSelectedAgentId((current) => preferred?.id || current || list[0].id);
         }
       })
-      .catch(() => message.error('Failed to load agents'))
-      .finally(() => setAgentsLoading(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+      .catch(() => { if (!cancelled) message.error('Failed to load agents'); })
+      .finally(() => { if (!cancelled) setAgentsLoading(false); });
+    return () => { cancelled = true; };
+  }, [linkedAgent]);
+
+  useEffect(() => {
+    if (!linkedSession || linkedSession === currentSessionRef.current) return;
+    const epoch = ++conversationEpoch.current;
+    currentSessionRef.current = null;
+    abortRef.current?.abort();
+    setRestoring(true);
+    setRestoreError(null);
+    setMessages([]);
+    setSessionId(null);
+    setTraceEvents([]);
+    setActiveCitations([]);
+    setWorkflowFormData({});
+    setSending(false);
+    Promise.all([
+      sessionsApi.get(linkedSession),
+      sessionsApi.messages(linkedSession, { limit: 50, latest: true }),
+    ]).then(([detail, history]) => {
+      if (epoch !== conversationEpoch.current) return;
+      currentSessionRef.current = detail.data.id;
+      setSessionId(detail.data.id);
+      setSessionUserId(detail.data.user_id);
+      setSelectedAgentId(detail.data.agent_id);
+      setSessionStatus(detail.data.status);
+      setOlderMessages(history.data.offset > 0);
+      setMessages(history.data.items.map((item): ChatMessage => ({
+        role: item.role === 'user' ? 'user' : 'assistant',
+        content: item.short_answer || item.content,
+        timestamp: item.created_at ? new Date(item.created_at).getTime() : Date.now(),
+        citations: item.citations || [],
+        followups: item.suggested_followups || [],
+        traceId: item.trace_id || undefined,
+        metadata: item.metadata || undefined,
+        workflowCard: item.workflow_card || undefined,
+        workflowStatus: item.workflow_status || undefined,
+      })));
+    }).catch((error: unknown) => {
+      if (epoch === conversationEpoch.current) setRestoreError(friendlyError(error, restoreTranslation.current));
+    }).finally(() => {
+      if (epoch === conversationEpoch.current) setRestoring(false);
+    });
+    return () => { conversationEpoch.current += 1; };
+  }, [linkedSession]);
 
   /* ── Window resize → auto-hide trace panel on narrow screens ── */
 
@@ -214,21 +278,43 @@ export default function PlaygroundPage() {
   /* ── New Session ───────────────────────────────────── */
 
   const handleNewSession = () => {
+    conversationEpoch.current += 1;
+    currentSessionRef.current = null;
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
     setMessages([]);
     setSessionId(null);
+    setSearchParams({}, { replace: true });
+    setSessionUserId('anonymous');
+    setSessionStatus(null);
+    setRestoring(false);
+    setRestoreError(null);
+    setOlderMessages(false);
     setTraceEvents([]);
     setActiveCitations([]);
     setWorkflowFormData({});
     setSending(false);
   };
 
+  const rememberSession = (id: string, status?: string) => {
+    currentSessionRef.current = id;
+    setSessionId(id);
+    setSearchParams({ session: id }, { replace: true });
+    setSessionStatus(status || 'active');
+    if (status === 'escalated') {
+      const epoch = conversationEpoch.current;
+      sessionsApi.get(id).then((result) => {
+        if (epoch === conversationEpoch.current) setSessionStatus(result.data.status);
+      }).catch(() => { /* The response status remains visible if refresh fails. */ });
+    }
+  };
+
   /* ── Send via SSE streaming ────────────────────────── */
 
   const sendStreaming = async (userMessage: string, formData?: Record<string, any>) => {
+    const epoch = conversationEpoch.current;
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -246,6 +332,7 @@ export default function PlaygroundPage() {
         agent_id: selectedAgentId!,
         message: userMessage,
         tenant_id: 'default',
+        user_id: sessionUserId,
       };
       if (sessionId) body.session_id = sessionId;
       if (formData) body.form_data = formData;
@@ -259,6 +346,7 @@ export default function PlaygroundPage() {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+      if (epoch !== conversationEpoch.current) return;
 
       if (!response.ok) {
         let detail: string | undefined;
@@ -290,6 +378,7 @@ export default function PlaygroundPage() {
 
       while (true) {
         const { value, done } = await reader.read();
+        if (epoch !== conversationEpoch.current) return;
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -366,7 +455,7 @@ export default function PlaygroundPage() {
                 finalWorkflowCard = parsed.workflow_card;
                 finalWorkflowStatus = parsed.workflow_status;
                 finalSkillInfo = parsed.skill_info || undefined;
-                if (parsed.session_id) setSessionId(parsed.session_id);
+                if (parsed.session_id) rememberSession(parsed.session_id, parsed.workflow_status);
               } else if (currentEvent === 'error') {
                 const errorType = parsed.error_type as string | undefined;
                 const isLlmError = errorType === 'llm_error' || errorType === 'rate_limit' || errorType === 'timeout';
@@ -423,6 +512,7 @@ export default function PlaygroundPage() {
       /* Auto-load trace */
       if (finalTraceId) loadTrace(finalTraceId);
     } catch (err: any) {
+      if (epoch !== conversationEpoch.current) return;
       if (err.name === 'AbortError') return;
       const errorText = friendlyError(err, t);
       message.error(errorText);
@@ -440,26 +530,29 @@ export default function PlaygroundPage() {
         return updated;
       });
     } finally {
-      abortRef.current = null;
+      if (epoch === conversationEpoch.current) abortRef.current = null;
     }
   };
 
   /* ── Send via sync invoke (fallback) ───────────────── */
 
   const sendSync = async (userMessage: string, formData?: Record<string, any>) => {
+    const epoch = conversationEpoch.current;
     try {
       const body: Record<string, any> = {
         agent_id: selectedAgentId!,
         message: userMessage,
         tenant_id: 'default',
+        user_id: sessionUserId,
       };
       if (sessionId) body.session_id = sessionId;
       if (formData) body.form_data = formData;
 
       const res = await invokeApi.send(body);
+      if (epoch !== conversationEpoch.current) return;
       const data = res.data;
 
-      setSessionId(data.session_id);
+      rememberSession(data.session_id, data.workflow_status);
 
       const assistantMsg: ChatMessage = {
         role: 'assistant',
@@ -478,6 +571,7 @@ export default function PlaygroundPage() {
       if (data.citations?.length > 0) setActiveCitations(data.citations);
       if (data.trace_id) loadTrace(data.trace_id);
     } catch (err: any) {
+      if (epoch !== conversationEpoch.current) return;
       const errorText = friendlyError(err, t);
       message.error(errorText);
       setMessages((prev) => [
@@ -495,6 +589,8 @@ export default function PlaygroundPage() {
   /* ── Send payload (shared by text input & workflow actions) ── */
 
   const sendPayload = async (text: string, formData?: Record<string, any>) => {
+    if (restoring || restoreError || sending) return;
+    const epoch = conversationEpoch.current;
     if (!selectedAgentId) {
       message.warning('Please select an agent first');
       return;
@@ -511,7 +607,7 @@ export default function PlaygroundPage() {
         await sendSync(text, formData);
       }
     } finally {
-      setSending(false);
+      if (epoch === conversationEpoch.current) setSending(false);
     }
   };
 
@@ -691,7 +787,7 @@ export default function PlaygroundPage() {
     const card = msg.workflowCard;
     if (!card) return null;
 
-    const isCompleted = msg.workflowStatus === 'completed' || card.step_type === 'complete';
+    const isCompleted = msg.workflowStatus === 'completed';
     const isConfirm = card.step_type === 'confirm';
     const isActive = idx === activeWorkflowIdx && !sending;
 
@@ -909,6 +1005,25 @@ export default function PlaygroundPage() {
           minWidth: 0,
         }}
       >
+        {restoring && <Spin style={{ padding: 16 }} />}
+        {restoreError && <Alert type="error" showIcon message={t('conversations.restoreFailed')}
+          description={restoreError} style={{ marginBottom: 12 }} />}
+        {olderMessages && <Alert type="info" message={<Link to="/conversations">{t('conversations.olderHistory')}</Link>}
+          style={{ marginBottom: 12 }} />}
+        {sessionStatus && !restoring && (
+          <Space wrap style={{ marginBottom: 12 }}>
+            <Tag>{t(`conversations.statuses.${sessionStatus}`, { defaultValue: sessionStatus })}</Tag>
+            {sessionStatus === 'paused_for_review' && <>
+              <Text type="secondary">{t('conversations.pauseHelp')}</Text>
+              <Button loading={sending} onClick={() => sendPayload(t('conversations.resumeToken'))}>
+                {t('conversations.resumeWorkflow')}
+              </Button>
+            </>}
+            {sessionStatus === 'await_retry' && <Button loading={sending} onClick={() => sendPayload(t('conversations.retryToken'))}>
+              {t('conversations.retryWorkflow')}
+            </Button>}
+          </Space>
+        )}
         {/* Top Bar */}
         <div
           style={{
@@ -926,6 +1041,7 @@ export default function PlaygroundPage() {
             <Select
               placeholder="Select Agent"
               value={selectedAgentId}
+              disabled={restoring}
               onChange={(v) => {
                 setSelectedAgentId(v);
                 handleNewSession();
@@ -1340,6 +1456,11 @@ export default function PlaygroundPage() {
                                 </Text>
                               )}
                             </Space>
+                            {t.workflow_meta && (
+                              <pre style={{ fontSize: 11, maxHeight: 260, overflow: 'auto', background: '#fffbe6', padding: 8 }}>
+                                {JSON.stringify(t.workflow_meta, null, 2)}
+                              </pre>
+                            )}
                             {t.event_data && (
                               <pre
                                 style={{

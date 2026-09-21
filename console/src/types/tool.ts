@@ -2,12 +2,12 @@ export interface Tool {
   id: string;
   name: string;
   description: string;
-  category: 'api' | 'function' | 'webhook' | 'rpc';
+  category: 'api' | 'function' | 'webhook' | 'rpc' | 'data_query';
   endpoint: string;
   method: string;
   input_schema: Record<string, unknown> | null;
   output_schema: Record<string, unknown> | null;
-  auth_config: Record<string, unknown> | null;
+  auth_config: { type?: string; header?: string; has_token?: boolean } | null;
   timeout_ms: number;
   max_retries: number;
   retry_backoff_ms: number;

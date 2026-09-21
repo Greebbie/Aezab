@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import get_db
+from server.api.agents import _validate_llm_config
 from server.middleware.auth import get_current_user, get_tenant_id
 from server.models.agent import Agent
 from server.models.agent_skill import AgentSkill
@@ -194,6 +195,8 @@ async def instantiate_agent_template(
     template = get_template(template_id)
     if template is None:
         raise HTTPException(404, "Template not found")
+
+    await _validate_llm_config(db, body.llm_config_id, tenant_id)
 
     requested_name = body.name or template["name"]
     name = await _unique_agent_name(db, tenant_id, requested_name)

@@ -10,10 +10,36 @@ from server.db import get_db
 from server.models.tool import ToolDefinition
 from server.schemas.tool import ToolCreate, ToolUpdate, ToolOut, ToolTestRequest, ToolTestResponse
 from server.engine.tool_gateway import ToolGateway
+from server.engine.secrets_store import encrypt_secret
 from server.middleware.auth import get_current_user, get_tenant_id
 from server.api._usage_check import get_resource_usage
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+def _store_auth_config(value: dict | None, previous: dict | None = None) -> dict | None:
+    if value is None:
+        return None
+    auth_type = value.get("type", "none")
+    if auth_type not in {"none", "bearer", "api_key"}:
+        raise HTTPException(422, "Supported tool authentication: none, bearer, api_key")
+    result = {"type": auth_type}
+    if auth_type == "none":
+        return result
+    header = value.get("header", "X-API-Key")
+    if not isinstance(header, str) or not header or any(c in header for c in "\r\n:"):
+        raise HTTPException(422, "Invalid API key header")
+    result["header"] = header
+    if "token" in value:
+        token = value["token"]
+        if not isinstance(token, str) or any(c in token for c in "\r\n"):
+            raise HTTPException(422, "Tool token must be a single-line string")
+        result["token"] = encrypt_secret(token)
+    elif previous and previous.get("type") == auth_type:
+        result["token"] = previous.get("token", "")
+    else:
+        result["token"] = ""
+    return result
 
 
 @router.get("/", response_model=list[ToolOut])
@@ -26,6 +52,8 @@ async def list_tools(tenant_id: str = Depends(get_tenant_id), db: AsyncSession =
 async def create_tool(
     body: ToolCreate, tenant_id: str = Depends(get_tenant_id), db: AsyncSession = Depends(get_db),
 ):
+    if body.category == "data_query":
+        raise HTTPException(422, "Create managed query tools through data sources")
     tool = ToolDefinition(
         name=body.name,
         description=body.description,
@@ -34,7 +62,7 @@ async def create_tool(
         method=body.method,
         input_schema=body.input_schema,
         output_schema=body.output_schema,
-        auth_config=body.auth_config,
+        auth_config=_store_auth_config(body.auth_config),
         timeout_ms=body.timeout_ms,
         max_retries=body.max_retries,
         retry_backoff_ms=body.retry_backoff_ms,
@@ -93,8 +121,12 @@ async def update_tool(
     tool = result.scalar_one_or_none()
     if not tool:
         raise HTTPException(404, "Tool not found")
+    if tool.category == "data_query":
+        raise HTTPException(409, "Edit this query tool through its data source")
 
     update_data = body.model_dump(exclude_unset=True)
+    if "auth_config" in update_data:
+        update_data["auth_config"] = _store_auth_config(update_data["auth_config"], tool.auth_config)
     for key, value in update_data.items():
         setattr(tool, key, value)
 
@@ -113,6 +145,8 @@ async def delete_tool(
     tool = result.scalar_one_or_none()
     if not tool:
         raise HTTPException(404, "Tool not found")
+    if tool.category == "data_query":
+        raise HTTPException(409, "Delete this query tool through its data source")
     await db.delete(tool)
     await db.commit()
 

@@ -12,6 +12,8 @@ const EVENT_COLORS: Record<string, string> = {
   llm_call: 'purple',
   tool_call: 'orange',
   workflow_step: 'geekblue',
+  workflow_decision: 'gold',
+  workflow_branch: 'cyan',
   response: 'blue',
   escalation: 'red',
   error: 'red',
@@ -161,6 +163,11 @@ export default function AuditPage() {
                   {tr.tool_meta && (
                     <pre style={{ fontSize: 12, background: '#fff7e6', padding: 8, marginTop: 8 }}>
                       {JSON.stringify(tr.tool_meta, null, 2)}
+                    </pre>
+                  )}
+                  {tr.workflow_meta && (
+                    <pre style={{ fontSize: 12, maxHeight: 300, overflow: 'auto', background: '#fffbe6', padding: 8, marginTop: 8 }}>
+                      {JSON.stringify(tr.workflow_meta, null, 2)}
                     </pre>
                   )}
                 </Card>

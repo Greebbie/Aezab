@@ -28,7 +28,7 @@ export interface AgentCreate {
   description?: string;
   system_prompt?: string;
   llm_model?: string;
-  llm_config_id?: string;
+  llm_config_id?: string | null;
   response_config?: Partial<ResponseConfig>;
   risk_config?: Record<string, unknown>;
   skill_routing_mode?: string;

@@ -19,7 +19,7 @@ from server.engine.asr import (
     asr_needs_api_key,
     save_asr_config_update,
 )
-from server.middleware.auth import get_current_user
+from server.middleware.auth import enforce_rate_limit, get_current_user, require_role, require_scope
 from server.schemas.asr import ASRConfigResponse, ASRConfigUpdate, ASRStatusResponse, ASRTranscriptionResponse
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,10 @@ async def get_asr_config():
     return _config_response(config_from_settings())
 
 
-@router.put("/config", response_model=ASRConfigResponse)
+@router.put(
+    "/config", response_model=ASRConfigResponse,
+    dependencies=[Depends(require_scope("manage")), Depends(require_role("admin"))],
+)
 async def update_asr_config(body: ASRConfigUpdate):
     if body.provider != "disabled" and (not body.base_url or not body.model):
         raise HTTPException(status_code=400, detail="ASR base URL and model are required")
@@ -79,7 +82,10 @@ async def update_asr_config(body: ASRConfigUpdate):
     return _config_response(config)
 
 
-@router.post("/transcribe", response_model=ASRTranscriptionResponse)
+@router.post(
+    "/transcribe", response_model=ASRTranscriptionResponse,
+    dependencies=[Depends(require_scope("invoke")), Depends(enforce_rate_limit)],
+)
 async def transcribe_audio(
     file: UploadFile = File(...),
     language: str | None = Form(None),
@@ -88,8 +94,11 @@ async def transcribe_audio(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Audio filename is required")
 
-    audio_bytes = await file.read()
     service = ASRService()
+    max_bytes = effective_max_file_mb(service.config) * 1024 * 1024
+    audio_bytes = await file.read(max_bytes + 1)
+    if len(audio_bytes) > max_bytes:
+        raise HTTPException(status_code=413, detail="Audio file exceeds the configured size limit")
     try:
         result = await service.transcribe(
             filename=file.filename,

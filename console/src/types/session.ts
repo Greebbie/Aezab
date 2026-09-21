@@ -1,11 +1,15 @@
 // Conversation session / message types — mirrors server/api/sessions.py
 // response shapes (server/models/session.py: ConversationSession, Message).
+import type { Citation, WorkflowCard } from './invoke';
 
 export interface ConversationSessionSummary {
   id: string;
   agent_id: string;
   user_id: string;
   status: string;
+  workflow_status: string | null;
+  workflow_id: string | null;
+  workflow_version: number | null;
   message_count: number;
   created_at: string | null;
   updated_at: string | null;
@@ -25,8 +29,12 @@ export interface ConversationMessage {
   content: string;
   short_answer: string | null;
   expanded_answer: string | null;
-  citations: Record<string, unknown> | null;
-  suggested_followups: Record<string, unknown> | null;
+  citations: Citation[] | null;
+  suggested_followups: string[] | null;
+  trace_id: string | null;
+  workflow_card: WorkflowCard | null;
+  workflow_status: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: string | null;
 }
 

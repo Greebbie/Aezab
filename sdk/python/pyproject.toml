@@ -1,12 +1,12 @@
 [project]
 name = "hlab-client"
 version = "0.1.0"
-description = "Official Python SDK for the HlAB Headless AI Agent Platform"
+description = "Python SDK for Aezab task agents"
 readme = "README.md"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors = [
-    { name = "HlAB", email = "oss@hlab.example.com" },
+    { name = "Aezab contributors" },
 ]
 keywords = ["hlab", "aezab", "ai-agent", "llm", "sdk"]
 classifiers = [
@@ -24,10 +24,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/AbysenAI/aezab"
-Repository = "https://github.com/AbysenAI/aezab"
-Documentation = "https://github.com/AbysenAI/aezab/blob/main/docs/integration.md"
-Issues = "https://github.com/AbysenAI/aezab/issues"
+Homepage = "https://github.com/Greebbie/Aezab"
+Repository = "https://github.com/Greebbie/Aezab"
+Documentation = "https://github.com/Greebbie/Aezab/blob/main/docs/integration.md"
+Issues = "https://github.com/Greebbie/Aezab/issues"
 
 [build-system]
 requires = ["setuptools>=68.0"]

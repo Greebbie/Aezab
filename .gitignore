@@ -20,10 +20,14 @@ env/
 
 # Environment (contains API keys)
 .env
-.env.local
+.env.*
+!.env.example
 
 # Database
 *.db
+*.db-wal
+*.db-shm
+*.sqlite
 *.sqlite3
 
 # Logs
@@ -38,6 +42,7 @@ Thumbs.db
 node_modules/
 package-lock.json
 console/package-lock.json
+!/console/package-lock.json
 console/node_modules/
 console/dist/
 console/.next/
@@ -58,6 +63,8 @@ static/*
 .codex/
 .superpowers/
 .playwright-mcp/
+.playwright-cli/
+output/playwright/
 AGENTS.md
 CLAUDE.md
 TRACKING.md
@@ -80,7 +87,28 @@ hlab-visible-*.png
 settings-*.png
 
 # Tests (contain local keys and customer-specific fixtures)
-tests/
+tests/*
+!tests/conftest.py
+!tests/test_decision_service.py
+!tests/test_workflow_decisions.py
+!tests/test_runtime_resource_scope.py
+!tests/test_context_budget.py
+!tests/test_workflow_graph.py
+!tests/test_agent_capability_descriptions.py
+!tests/test_agent_runtime_memory.py
+!tests/workflow_graph.test.cjs
+!tests/test_auth_boundaries.py
+!tests/test_runtime_concurrency.py
+!tests/test_session_operations.py
+!tests/test_health_access.py
+!tests/test_business_data.py
+!tests/test_summary_scheduler.py
+!tests/test_runtime_admission.py
+!tests/test_tool_secret_boundaries.py
+!tests/test_tool_execution_contracts.py
+!tests/test_template_setup.py
+!tests/test_static_delivery.py
+!tests/test_request_defense.py
 demo_full_test.py
 test_e2e.js
 playwright.config.ts
@@ -92,3 +120,4 @@ htmlcov/
 .coverage
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/

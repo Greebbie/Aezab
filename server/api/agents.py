@@ -11,9 +11,22 @@ from server.middleware.auth import get_current_user, get_tenant_id
 from server.models.agent import Agent
 from server.models.skill import Skill
 from server.models.agent_skill import AgentSkill
+from server.models.llm_config import LLMConfig
 from server.schemas.agent import AgentCreate, AgentUpdate, AgentOut
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+async def _validate_llm_config(db: AsyncSession, config_id: str | None, tenant_id: str) -> None:
+    if config_id is None or config_id == "":
+        return
+    if not isinstance(config_id, str):
+        raise HTTPException(400, "llm_config_id must be a string or null")
+    result = await db.execute(
+        select(LLMConfig.id).where(LLMConfig.id == config_id, LLMConfig.tenant_id == tenant_id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(404, "LLM configuration not found")
 
 
 @router.get("/", response_model=list[AgentOut])
@@ -28,6 +41,7 @@ async def create_agent(
     tenant_id: str = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ):
+    await _validate_llm_config(db, body.llm_config_id, tenant_id)
     agent = Agent(
         name=body.name,
         description=body.description,
@@ -69,6 +83,8 @@ async def update_agent(
         raise HTTPException(404, "Agent not found")
 
     update_data = body.model_dump(exclude_unset=True)
+    if "llm_config_id" in update_data:
+        await _validate_llm_config(db, update_data["llm_config_id"], tenant_id)
     for key, value in update_data.items():
         setattr(agent, key, value)
 
@@ -115,6 +131,8 @@ async def bulk_update_agents(
     safe_updates = {k: v for k, v in updates.items() if k in ALLOWED_FIELDS}
     if not safe_updates:
         raise HTTPException(status_code=400, detail=f"No valid fields. Allowed: {sorted(ALLOWED_FIELDS)}")
+    if "llm_config_id" in safe_updates:
+        await _validate_llm_config(db, safe_updates["llm_config_id"], tenant_id)
 
     count = 0
     for aid in agent_ids:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class ToolCreate(BaseModel):
@@ -64,6 +64,17 @@ class ToolOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("auth_config", mode="before")
+    @classmethod
+    def hide_credentials(cls, value):
+        if not isinstance(value, dict):
+            return None
+        return {
+            "type": value.get("type", "none"),
+            "header": value.get("header", "X-API-Key"),
+            "has_token": bool(value.get("token")),
+        }
 
 
 class ToolTestRequest(BaseModel):

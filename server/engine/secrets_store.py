@@ -123,3 +123,19 @@ async def migrate_plaintext_llm_keys(session: AsyncSession) -> int:
         logger.info("migrate_plaintext_llm_keys: encrypted %d llm_configs.api_key row(s)", migrated)
 
     return migrated
+
+
+async def migrate_plaintext_tool_tokens(session: AsyncSession) -> int:
+    """Encrypt legacy HTTP-tool tokens without changing other configuration."""
+    from server.models.tool import ToolDefinition
+
+    migrated = 0
+    for tool in (await session.scalars(select(ToolDefinition))).all():
+        config = tool.auth_config or {}
+        token = config.get("token")
+        if isinstance(token, str) and token and not is_encrypted(token):
+            tool.auth_config = {**config, "token": encrypt_secret(token)}
+            migrated += 1
+    if migrated:
+        await session.commit()
+    return migrated

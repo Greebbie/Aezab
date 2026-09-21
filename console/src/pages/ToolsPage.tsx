@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Space, message, Tag } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -150,9 +151,11 @@ export default function ToolsPage() {
 
   const columns = [
     { title: t('common.name'), dataIndex: 'name', key: 'name' },
-    { title: t('tools.category'), dataIndex: 'category', key: 'category', render: (v: string) => <Tag>{v}</Tag> },
+    { title: t('tools.category'), dataIndex: 'category', key: 'category', render: (v: string) => <Tag>{v === 'data_query' ? t('nav.businessData') : v}</Tag> },
     { title: t('tools.method'), dataIndex: 'method', key: 'method' },
-    { title: t('tools.endpoint'), dataIndex: 'endpoint', key: 'endpoint', ellipsis: true, render: (v: string, r: any) => r.category === 'function' ? <Tag color="blue">{t('tools.categories.function')}</Tag> : v },
+    { title: t('tools.endpoint'), dataIndex: 'endpoint', key: 'endpoint', ellipsis: true, render: (v: string, r: any) => r.category === 'data_query'
+      ? <Link to={`/business-data?source=${encodeURIComponent(v)}`}>{t('businessData.manageSource')}</Link>
+      : r.category === 'function' ? <Tag color="blue">{t('tools.categories.function')}</Tag> : v },
     { title: t('tools.timeout'), dataIndex: 'timeout_ms', key: 'timeout_ms' },
     {
       title: t('tools.riskLevel'), dataIndex: 'risk_level', key: 'risk_level',
@@ -161,6 +164,9 @@ export default function ToolsPage() {
     { title: t('common.status'), dataIndex: 'enabled', key: 'enabled', render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('common.enabled') : t('common.disabled')}</Tag> },
     {
       title: t('common.actions'), key: 'actions', render: (_: any, record: any) => (
+        record.category === 'data_query' ? <Link to={`/business-data?source=${encodeURIComponent(record.endpoint)}`}>
+          <Button size="small">{t('businessData.manageSource')}</Button>
+        </Link> :
         <Space>
           <Button icon={<ThunderboltOutlined />} size="small" onClick={() => handleTest(record.id)}>{t('common.test')}</Button>
           <Button icon={<EditOutlined />} size="small" onClick={() => openEdit(record)}>{t('common.edit')}</Button>

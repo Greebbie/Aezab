@@ -674,7 +674,10 @@ async def get_llm_adapter_for_agent(agent, db) -> LLMAdapter:
     # 1. Explicit LLM config reference
     if agent.llm_config_id:
         result = await db.execute(
-            select(LLMConfig).where(LLMConfig.id == agent.llm_config_id)
+            select(LLMConfig).where(
+                LLMConfig.id == agent.llm_config_id,
+                LLMConfig.tenant_id == agent.tenant_id,
+            )
         )
         config = result.scalar_one_or_none()
         if config:

@@ -24,8 +24,9 @@ class VectorStoreAdapter(ABC):
     def search(
         self, query: str, top_k: int = 5, domain: str | None = None,
         ef_search: int = 128,
+        allowed_chunk_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Search for similar vectors. Returns list of {chunk_id, score, domain}."""
+        """Search within allowed chunk IDs; an empty set returns no results."""
 
     @abstractmethod
     def delete(self, chunk_ids: list[str]) -> int:

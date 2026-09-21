@@ -1,5 +1,7 @@
 # Configuration Guide
 
+For graph connections, branch conditions and optional Jev decision nodes, see [workflow decisions](jev-decisions.md). Jev is a separate cloud decision service, not an OpenAI-compatible chat-model configuration.
+
 > For readers who already have Aezab running and need to configure models, agents, capability
 > triggering, and knowledge upload. Installation and quick start: root
 > [`README.md`](../README.md). 中文版：[`docs/configuration.md`](./configuration.md)。

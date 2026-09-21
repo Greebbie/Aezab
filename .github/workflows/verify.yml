@@ -1,0 +1,29 @@
+name: Verify task agents
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: pip install -e '.[dev]' numpy faiss-cpu jieba
+      - run: python scripts/verify_offline.py
+      - run: npm ci --prefix console --no-audit --no-fund
+      - run: node tests/workflow_graph.test.cjs
+      - run: npm --prefix console run build
+      - run: cp .env.example .env
+      - run: docker compose config --quiet
+      - run: docker compose -f docker-compose.yml -f docker-compose.postgres.yml config --quiet
+        env:
+          AEZAB_POSTGRES_PASSWORD: offline-compose-validation-only

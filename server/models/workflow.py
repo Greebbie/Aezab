@@ -42,7 +42,7 @@ class WorkflowStep(Base):
     order: Mapped[int] = mapped_column(Integer, nullable=False)
     step_type: Mapped[str] = mapped_column(
         String(32), default="collect"
-    )  # collect | validate | tool_call | confirm | human_review | complete
+    )  # collect | validate | tool_call | decision | confirm | human_review | complete
 
     # Prompt template shown to user at this step
     prompt_template: Mapped[str] = mapped_column(Text, default="")

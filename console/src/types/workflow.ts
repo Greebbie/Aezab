@@ -26,11 +26,11 @@ export interface WorkflowStep {
   fallback_step_id: string | null;
   requires_human_confirm: boolean;
   risk_level: string;
-  next_step_rules: NextStepRule[] | null;
+  next_step_rules: NextStepRules | null;
   created_at: string;
 }
 
-export type StepType = 'collect' | 'validate' | 'tool_call' | 'confirm' | 'human_review' | 'complete';
+export type StepType = 'collect' | 'validate' | 'tool_call' | 'decision' | 'confirm' | 'human_review' | 'complete';
 export type OnFailureStrategy = 'retry' | 'skip' | 'rollback' | 'escalate';
 
 export interface FieldDef {
@@ -57,9 +57,11 @@ export interface NextStepRule {
   goto_step: string;
 }
 
+export type NextStepRules = { rules: NextStepRule[] } | NextStepRule[];
+
 export interface RuleCondition {
   field: string;
-  op: 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte' | 'contains' | 'regex' | 'in' | 'not_in';
+  op: 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte' | 'contains' | 'not_contains' | 'regex' | 'in' | 'not_in';
   value: unknown;
 }
 
@@ -75,7 +77,7 @@ export interface StepCreate {
   on_failure?: OnFailureStrategy;
   max_retries?: number;
   fallback_step_id?: string | null;
-  next_step_rules?: NextStepRule[];
+  next_step_rules?: NextStepRules | null;
   requires_human_confirm?: boolean;
   risk_level?: string;
 }

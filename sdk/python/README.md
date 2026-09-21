@@ -1,11 +1,11 @@
 # hlab-client
 
-Official Python SDK for the [HlAB](https://github.com/AbysenAI/aezab) Headless AI Agent Platform. Zero
+Python SDK for [Aezab](https://github.com/Greebbie/Aezab). Zero
 dependencies beyond [`httpx`](https://www.python-httpx.org/) (`>=0.24`). Provides both a synchronous
 (`HlabClient`) and an asyncio-based (`AsyncHlabClient`) client with an identical method surface.
 
 Full API reference and SSE event contract: see
-[`docs/integration.md`](https://github.com/AbysenAI/aezab/blob/main/docs/integration.md) in the main repo.
+[`docs/integration.md`](https://github.com/Greebbie/Aezab/blob/main/docs/integration.md) in the main repo.
 
 ## Install
 
@@ -80,7 +80,7 @@ result = client.invoke("sales_agent", "here is my file", form_data={"attachment"
 
 ## Authentication
 
-All requests are authenticated with an `X-API-Key` header. Create a scoped key via the HlAB console or
+All requests are authenticated with an `X-API-Key` header. Create a scoped key via the Aezab console or
 `POST /api/v1/auth/api-keys` — use an `invoke`-scoped key for this SDK, never a `manage`-scoped key, in
 any client-side or externally-shared code.
 

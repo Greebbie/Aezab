@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 
+import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -28,13 +30,65 @@ from server.schemas.invoke import InvokeRequest, InvokeResponse
 from server.engine.agent_runtime import AgentRuntime
 from server.engine.localization import detect_lang, server_text
 from server.engine.request_guard import (
+    InvokeCapacityExceeded,
+    SessionWaitTimeout,
     get_idempotent_response,
+    invoke_slot,
     session_lock,
     store_idempotent_response,
 )
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 logger = logging.getLogger(__name__)
+_SSE_DELIVERY_GRACE_SECONDS = 5.0
+
+
+@asynccontextmanager
+async def _admit_invoke(session_id: str | None):
+    try:
+        async with invoke_slot(), session_lock(
+            session_id, timeout_seconds=settings.session_wait_timeout_seconds,
+        ):
+            yield
+    except InvokeCapacityExceeded as exc:
+        raise HTTPException(
+            status_code=503, detail="Invoke capacity reached; retry shortly.",
+            headers={"Retry-After": "1"},
+        ) from exc
+    except SessionWaitTimeout as exc:
+        raise HTTPException(
+            status_code=429, detail="Session is busy; retry after the current turn.",
+            headers={"Retry-After": "1"},
+        ) from exc
+
+
+class _InvocationStreamingResponse(StreamingResponse):
+    """Acquire before HTTP headers, and only when ASGI actually serves the response."""
+
+    def __init__(self, content, *, session_id: str | None, **kwargs):
+        super().__init__(content, **kwargs)
+        self.session_id = session_id
+
+    async def __call__(self, scope, receive, send):
+        async with _admit_invoke(self.session_id):
+            try:
+                # The provider deadline cannot interrupt a blocked ASGI send
+                # or a final/error event waiting for space in the queue.
+                await asyncio.wait_for(
+                    super().__call__(scope, receive, send),
+                    timeout=settings.pipeline_timeout_seconds + _SSE_DELIVERY_GRACE_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                # Headers may already be sent. End the stream instead of
+                # attempting another error event on an unresponsive transport.
+                logger.warning("SSE delivery deadline reached; closing stalled stream")
+                raise
+            finally:
+                # A failed send can exit before the iterator resumes its yield.
+                # Close it while the slot/lock are still held so its pipeline
+                # finishes cancellation before another turn enters the session.
+                with anyio.CancelScope(shield=True):
+                    await self.body_iterator.aclose()
 
 
 def _is_cacheable(response: InvokeResponse) -> bool:
@@ -83,7 +137,6 @@ async def invoke(
     if cached is not None:
         return InvokeResponse(**cached)
 
-    await _check_agent_tenant(db, req.agent_id, tenant_id)
     runtime = AgentRuntime(db)
     # Serialize concurrent calls for the same session_id. When there is no
     # session yet but a client sent an Idempotency-Key, serialize on the key
@@ -92,7 +145,8 @@ async def invoke(
         f"idem:{tenant_id}:{idempotency_key}" if idempotency_key else None
     )
     try:
-        async with session_lock(lock_key):
+        async with _admit_invoke(lock_key):
+            await _check_agent_tenant(db, req.agent_id, tenant_id)
             # Re-check inside the lock: a concurrent same-key retry that raced
             # the first request past the pre-lock check would otherwise run the
             # pipeline (and its side effects) a second time. The lock serializes
@@ -148,7 +202,12 @@ async def invoke_stream(
     REPLACES, not appends to, any streamed partial text — it may differ from
     the concatenation of deltas when fallbacks/refusal-supplements fire).
     """
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=settings.sse_queue_maxsize)
+    consumer_closed = asyncio.Event()
+    # A stream can outlive request dependencies (including supported FastAPI
+    # versions that close yield dependencies before sending the response).
+    # Capture the bind, then give the producer its own session lifetime.
+    stream_bind = db.bind
 
     def _sse_event(event: str, data: dict) -> str:
         """Format a single SSE event string."""
@@ -178,7 +237,7 @@ async def invoke_stream(
                 "stage": "retrieval", "state": "finished", "hits": data.get("hits", 0),
             }))
 
-    async def _run_pipeline() -> None:
+    async def _execute_pipeline(db: AsyncSession) -> None:
         """Execute the agent pipeline and push SSE events onto the queue."""
         lang = detect_lang(req.message)
         try:
@@ -187,14 +246,12 @@ async def invoke_stream(
             runtime = AgentRuntime(db)
 
             # Run the full orchestration pipeline (bounded by the global timeout).
-            # Serialized per session_id like the sync /invoke path (no-op for
-            # a brand-new session_id=None). Streaming responses are never
-            # idempotency-cached (see request_guard.py docstring).
+            # Admission and the session lock belong to the ASGI response;
+            # streaming responses are never idempotency-cached.
             try:
-                async with session_lock(req.session_id):
-                    response: InvokeResponse = await asyncio.wait_for(
-                        runtime.invoke(req, event_cb=_event_cb), timeout=settings.pipeline_timeout_seconds,
-                    )
+                response: InvokeResponse = await asyncio.wait_for(
+                    runtime.invoke(req, event_cb=_event_cb), timeout=settings.pipeline_timeout_seconds,
+                )
             except asyncio.TimeoutError:
                 logger.error("SSE pipeline timed out after %ss", settings.pipeline_timeout_seconds)
                 await queue.put(_sse_event("error", {
@@ -222,6 +279,8 @@ async def invoke_stream(
                 "metadata": response.metadata,
             }))
 
+        except asyncio.CancelledError:
+            raise
         except LLMTimeoutError as exc:
             logger.error("SSE pipeline LLM timeout: %s", exc, exc_info=True)
             await queue.put(_sse_event("error", {
@@ -285,9 +344,16 @@ async def invoke_stream(
                 "error_type": "internal",
                 "error_msg": server_text("err_generic", lang),
             }))
+    async def _run_pipeline() -> None:
+        try:
+            async with AsyncSession(bind=stream_bind, expire_on_commit=False) as stream_db:
+                await _execute_pipeline(stream_db)
         finally:
-            # Sentinel: signals the generator to stop
-            await queue.put(None)
+            # Signal completion only after the producer's DB session closes.
+            # A disconnected consumer cannot drain a full queue, so cancellation
+            # must never enqueue a sentinel for that absent consumer.
+            if not consumer_closed.is_set():
+                await queue.put(None)
 
     async def _event_generator():
         """Async generator that yields SSE events from the queue."""
@@ -301,15 +367,18 @@ async def invoke_stream(
                 yield event
         finally:
             # Ensure the task is cleaned up if the client disconnects
+            consumer_closed.set()
             if not task.done():
                 task.cancel()
+            with anyio.CancelScope(shield=True):
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
 
-    return StreamingResponse(
+    return _InvocationStreamingResponse(
         _event_generator(),
+        session_id=req.session_id,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

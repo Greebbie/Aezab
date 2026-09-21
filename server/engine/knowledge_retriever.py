@@ -281,10 +281,22 @@ class KnowledgeRetriever:
     Reranker: Optional cross-encoder (activated via runtime config)
     """
 
-    def __init__(self, db: AsyncSession, vector_store=None, runtime_cfg: dict | None = None):
+    def __init__(
+        self, db: AsyncSession, vector_store=None, runtime_cfg: dict | None = None,
+        *, tenant_id: str = "default", source_ids: list[str] | None = None,
+    ):
         self.db = db
         self.vector_store = vector_store  # injected; None = skip vector search
         self._cfg = runtime_cfg or {}
+        self.tenant_id = tenant_id
+        self.source_ids = source_ids
+
+    def _scope(self, stmt):
+        """Apply ownership before candidate limits, scoring, or exact-match returns."""
+        stmt = stmt.where(KnowledgeSource.tenant_id == self.tenant_id)
+        if self.source_ids is not None:
+            stmt = stmt.where(KnowledgeSource.id.in_(self.source_ids))
+        return stmt
 
     # ── Fast Channel ─────────────────────────────────────────────
     async def fast_lookup(self, query: str, domain: str | None = None, top_k: int = 3) -> list[RetrievalHit]:
@@ -310,7 +322,7 @@ class KnowledgeRetriever:
         # Over-fetch then score in Python.  SQL LIKE only finds candidates; it
         # must not decide rank, otherwise broad token hits such as "电话" can
         # outrank an exact KV key like "物业服务电话".
-        stmt = stmt.where(or_(*conditions)).limit(max(top_k * 20, 50))
+        stmt = self._scope(stmt).where(or_(*conditions)).limit(max(top_k * 20, 50))
 
         result = await self.db.execute(stmt)
         rows = result.all()
@@ -368,15 +380,29 @@ class KnowledgeRetriever:
         if self.vector_store is None:
             return []
 
+        allowed_stmt = self._scope(
+            select(KnowledgeChunk.id)
+            .join(KnowledgeSource, KnowledgeChunk.source_id == KnowledgeSource.id)
+        )
+        if domain:
+            allowed_stmt = allowed_stmt.where(KnowledgeChunk.domain == domain)
+        allowed_ids = set((await self.db.execute(allowed_stmt)).scalars().all())
+        if not allowed_ids:
+            return []
+
         try:
             results = self.vector_store.search(
                 query, top_k=top_k, domain=domain,
                 ef_search=ef_search,
+                allowed_chunk_ids=allowed_ids,
             )
         except Exception as e:
             logger.warning(f"Vector search failed: {e}")
             return []
 
+        # Revalidate an index result before hydration without binding the entire
+        # authorized corpus again (large corpora exceed database parameter limits).
+        results = [result for result in results if result["chunk_id"] in allowed_ids]
         if not results:
             return []
 
@@ -388,7 +414,7 @@ class KnowledgeRetriever:
             .join(KnowledgeSource, KnowledgeChunk.source_id == KnowledgeSource.id)
             .where(KnowledgeChunk.id.in_(chunk_ids))
         )
-        db_result = await self.db.execute(stmt)
+        db_result = await self.db.execute(self._scope(stmt))
         rows = {chunk.id: (chunk, source_name) for chunk, source_name in db_result.all()}
 
         hits = []
@@ -434,7 +460,7 @@ class KnowledgeRetriever:
         )
         if domain:
             stmt = stmt.where(KnowledgeChunk.domain == domain)
-        stmt = stmt.limit(over_fetch)
+        stmt = self._scope(stmt).limit(over_fetch)
 
         result = await self.db.execute(stmt)
         rows = result.all()

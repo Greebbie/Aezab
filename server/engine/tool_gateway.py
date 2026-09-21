@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.models.tool import ToolDefinition
 from server.engine.audit_logger import AuditLogger
 from server.engine.circuit_breaker import circuit_breaker
+from server.engine.secrets_store import decrypt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,8 @@ class ToolGateway:
 
             except Exception as e:
                 last_error = e
+                if isinstance(e, ToolInvocationError) and not e.recoverable:
+                    break
                 if attempt < tool.max_retries:
                     await asyncio.sleep(tool.retry_backoff_ms / 1000 * (2 ** attempt))
 
@@ -175,6 +178,10 @@ class ToolGateway:
         )
         if schema_error:
             raise ToolInvocationError(tool.name, schema_error, recoverable=False)
+
+        if tool.category == "data_query":
+            from server.engine.business_data import execute_data_query
+            return await execute_data_query(self.db, tool.endpoint, tool.tenant_id, input_data)
 
         # 1. Try direct in-process call for mock tools (no HTTP needed)
         handler = self._get_mock_handler(tool)
@@ -312,10 +319,10 @@ class ToolGateway:
         if tool.auth_config:
             auth_type = tool.auth_config.get("type", "none")
             if auth_type == "bearer":
-                headers["Authorization"] = f"Bearer {tool.auth_config.get('token', '')}"
+                headers["Authorization"] = f"Bearer {decrypt_secret(tool.auth_config.get('token', ''))}"
             elif auth_type == "api_key":
                 key_name = tool.auth_config.get("header", "X-API-Key")
-                headers[key_name] = tool.auth_config.get("token", "")
+                headers[key_name] = decrypt_secret(tool.auth_config.get("token", ""))
 
         if extra_headers:
             headers.update(extra_headers)
@@ -359,6 +366,9 @@ class ToolGateway:
         tool = await self.get_tool(tool_id)
         if tool is None:
             return {"success": False, "error": "Tool not found"}
+
+        if tool.category == "data_query" and test_input is None:
+            return {"success": False, "error": "Supply query filters to test this data source"}
 
         if test_input is not None:
             t0 = time.perf_counter()

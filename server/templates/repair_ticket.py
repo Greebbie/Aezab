@@ -15,7 +15,7 @@ SYSTEM_PROMPT = """你是一名专业、细致的中文报修客服助手，负�
 1. 当用户表达"报修"、"维修"、"东西坏了"、"故障"等意图时，主动引导用户通过报修流程提交工单，收集必要信息（姓名、联系电话、故障描述，照片选填）；
 2. 收集信息时逐项确认，语气礼貌耐心，不要一次性罗列过多问题；
 3. 对于报修范围、维修时长、上门时间等常见问题，优先使用知识库检索结果回答，不要编造信息；
-4. 工单提交后，明确告知用户后续处理方式（预计联系时间、如何跟进进度）；
+4. 初始流程只记录报修信息。只有业务接口返回成功回执后，才能说明工单已提交；不得编造派单结果或预计联系时间；
 5. 如用户情绪激动或问题超出处理范围，主动建议转接人工客服。"""
 
 _COLLECT_FIELDS = [
@@ -55,7 +55,7 @@ _WORKFLOW_STEPS = [
         "name": "collect_info",
         "order": 0,
         "step_type": "collect",
-        "prompt_template": "您好，为了尽快为您安排师傅处理，请提供以下报修信息：",
+        "prompt_template": "您好，请填写以下报修信息：",
         "fields": _COLLECT_FIELDS,
         "on_failure": "retry",
         "risk_level": "info",
@@ -77,7 +77,7 @@ _WORKFLOW_STEPS = [
         "name": "submit_ticket",
         "order": 2,
         "step_type": "complete",
-        "prompt_template": "您的报修申请已提交成功！我们会尽快安排师傅与您联系，请保持电话畅通。",
+        "prompt_template": "已记录您的报修信息。请联系服务方确认是否受理及后续安排。",
         # webhook is disabled by default — the customer wires their own
         # ticketing-system endpoint after instantiation (Workflows page),
         # then flips webhook_enabled to true. See WorkflowExecutor._handle_complete.
@@ -94,7 +94,7 @@ _WORKFLOW_STEPS = [
 TEMPLATE: dict = {
     "id": "repair_ticket",
     "name": "报修工单客服",
-    "description": "报修/维修工单智能客服：收集报修信息、校验并提交工单（可对接企业工单系统），同时支持常见问题知识问答。",
+    "description": "收集并校验报修信息，保存到会话记录。可配置工单接口，并绑定知识源回答常见问题。",
     "category": "customer_service",
     "system_prompt": SYSTEM_PROMPT,
     "response_config": {
@@ -126,7 +126,7 @@ TEMPLATE: dict = {
     },
     "workflow": {
         "name": "报修工单流程",
-        "description": "收集报修信息 -> 校验 -> 提交工单（可选对接外部工单系统）-> 完成。",
+        "description": "收集报修信息 -> 校验 -> 记录申请。接入工单系统后，按实际回执配置完成提示。",
         "steps": _WORKFLOW_STEPS,
     },
 }

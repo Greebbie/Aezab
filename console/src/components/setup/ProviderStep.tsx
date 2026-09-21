@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Alert, Button, Card, Col, Collapse, Form, Input, Row, Space, Typography, message,
@@ -35,6 +35,7 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
   const [rawError, setRawError] = useState('');
   const [creating, setCreating] = useState(false);
   const [createdConfigId, setCreatedConfigId] = useState<string | null>(null);
+  const configRevision = useRef(0);
 
   useEffect(() => {
     llmConfigApi.getTemplates()
@@ -53,13 +54,15 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
   };
 
   const markDirty = () => {
-    if (testStatus !== 'idle') {
-      setTestStatus('idle');
-      setCreatedConfigId(null);
-    }
+    configRevision.current += 1;
+    setTestStatus('idle');
+    setTestErrorKind(null);
+    setRawError('');
+    setCreatedConfigId(null);
   };
 
   const handleSelectProvider = (id: string) => {
+    if (creating) return;
     const preset = PROVIDER_PRESETS.find((p) => p.id === id);
     if (!preset) return;
     const remote = templates[preset.templateKey];
@@ -68,15 +71,11 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
     setApiKey('');
     setModel(values.model);
     setBaseUrl(values.base_url);
-    setTestStatus('idle');
-    setTestErrorKind(null);
-    setRawError('');
-    setCreatedConfigId(null);
+    markDirty();
   };
 
   const handleTest = async () => {
     if (!selectedPreset) return;
-    const preset = resolvedPreset();
     if (!baseUrl.trim() || !model.trim()) {
       message.warning(t('setup.step1.fillRequired'));
       return;
@@ -85,6 +84,7 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
     setTestStatus('idle');
     setTestErrorKind(null);
     setRawError('');
+    const testedRevision = configRevision.current;
     try {
       const res = await llmConfigApi.test({
         base_url: baseUrl.trim(),
@@ -95,6 +95,7 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
         timeout_ms: 30000,
       });
       const data = res.data as { success: boolean; error?: string };
+      if (testedRevision !== configRevision.current) return;
       if (data.success) {
         setTestStatus('success');
       } else {
@@ -104,13 +105,13 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
         setRawError(err);
       }
     } catch (error: unknown) {
+      if (testedRevision !== configRevision.current) return;
       const msg = errorMessage(error, t('setup.step1.testFailedGeneric'));
       setTestStatus('error');
       setTestErrorKind(classifyConnectionError(msg));
       setRawError(msg);
     } finally {
       setTesting(false);
-      void preset;
     }
   };
 
@@ -169,7 +170,17 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
           <Col xs={12} md={8} key={preset.id}>
             <Card
               hoverable
+              role="button"
+              tabIndex={creating ? -1 : 0}
+              aria-pressed={selectedId === preset.id}
+              aria-disabled={creating}
               onClick={() => handleSelectProvider(preset.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  handleSelectProvider(preset.id);
+                }
+              }}
               style={{
                 cursor: 'pointer',
                 height: '100%',
@@ -191,10 +202,11 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
       </Row>
 
       {selectedPreset && (
-        <Form layout="vertical">
+        <Form layout="vertical" disabled={creating}>
           {selectedPreset.editableBaseUrl ? (
-            <Form.Item label={t('setup.fields.baseUrl')} help={t('setup.fields.baseUrlHelp')}>
+            <Form.Item htmlFor="setup-base-url" label={t('setup.fields.baseUrl')} help={t('setup.fields.baseUrlHelp')}>
               <Input
+                id="setup-base-url"
                 value={baseUrl}
                 onChange={(e) => { setBaseUrl(e.target.value); markDirty(); }}
                 placeholder="http://localhost:11434/v1"
@@ -214,10 +226,12 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
                 label: t('setup.step1.advancedSettings'),
                 children: (
                   <Form.Item
+                    htmlFor="setup-base-url"
                     label={t('setup.fields.baseUrl')}
                     help={t('setup.step1.advancedSettingsHint')}
                   >
                     <Input
+                      id="setup-base-url"
                       value={baseUrl}
                       onChange={(e) => { setBaseUrl(e.target.value); markDirty(); }}
                     />
@@ -228,8 +242,9 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
           )}
 
           {selectedPreset.needsApiKey && (
-            <Form.Item label={t('setup.fields.apiKey')} help={t('setup.fields.apiKeyHelp')}>
+            <Form.Item htmlFor="setup-api-key" label={t('setup.fields.apiKey')} help={t('setup.fields.apiKeyHelp')}>
               <Input.Password
+                id="setup-api-key"
                 value={apiKey}
                 onChange={(e) => { setApiKey(e.target.value); markDirty(); }}
                 placeholder={t('setup.fields.apiKeyPlaceholder')}
@@ -237,8 +252,9 @@ export default function ProviderStep({ onConfigCreated, onNext }: ProviderStepPr
             </Form.Item>
           )}
 
-          <Form.Item label={t('setup.fields.model')} help={t('setup.fields.modelHelp')}>
+          <Form.Item htmlFor="setup-model" label={t('setup.fields.model')} help={t('setup.fields.modelHelp')}>
             <Input
+              id="setup-model"
               value={model}
               onChange={(e) => { setModel(e.target.value); markDirty(); }}
             />

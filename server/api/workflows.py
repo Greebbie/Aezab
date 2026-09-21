@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,6 +15,7 @@ from server.db import get_db
 from server.middleware.auth import get_current_user, get_tenant_id
 from server.models.workflow import Workflow, WorkflowStep
 from server.schemas.workflow import WorkflowCreate, WorkflowUpdate, WorkflowOut, StepCreate, StepOut
+from server.schemas.decision import DecisionConfig
 from server.api._usage_check import get_resource_usage
 
 
@@ -32,7 +34,7 @@ async def _load_workflow(
     return result.scalar_one_or_none()
 
 
-_ALLOWED_STEP_TYPES = {"collect", "validate", "tool_call", "confirm", "human_review", "complete"}
+_ALLOWED_STEP_TYPES = {"collect", "validate", "tool_call", "decision", "confirm", "human_review", "complete"}
 _ALLOWED_FAILURE_ACTIONS = {"retry", "skip", "rollback", "escalate"}
 _ALLOWED_RISK_LEVELS = {"info", "warning", "critical"}
 _ALLOWED_FIELD_TYPES = {
@@ -175,7 +177,10 @@ def _validate_next_step_rules(
     if not rules:
         return
     if isinstance(rules, dict):
-        rules = rules.get("rules", [])
+        if "rules" not in rules:
+            errors.append(f"Step '{step_name}' next_step_rules object must contain rules.")
+            return
+        rules = rules["rules"]
     if not isinstance(rules, list):
         errors.append(f"Step '{step_name}' next_step_rules must be a list or {{rules: [...]}} object.")
         return
@@ -194,6 +199,8 @@ def _validate_next_step_rules(
 
         condition = rule.get("condition")
         if condition is None:
+            if idx != len(rules) - 1:
+                errors.append(f"Step '{step_name}' default route must be last.")
             continue
         if not isinstance(condition, dict):
             errors.append(f"Step '{step_name}' branch rule #{idx + 1} condition must be an object.")
@@ -205,6 +212,16 @@ def _validate_next_step_rules(
         op = condition.get("op", "eq")
         if op not in _ALLOWED_RULE_OPERATORS:
             errors.append(f"Step '{step_name}' branch rule #{idx + 1} has invalid op '{op}'.")
+        if op == "regex":
+            try:
+                re.compile(str(condition.get("value", "")))
+            except re.error:
+                errors.append(f"Step '{step_name}' branch rule #{idx + 1} has invalid regex.")
+        if op in {"gt", "lt", "gte", "lte"}:
+            try:
+                float(condition.get("value"))
+            except (TypeError, ValueError):
+                errors.append(f"Step '{step_name}' branch rule #{idx + 1} needs a numeric value.")
 
 
 def _validate_workflow_steps(
@@ -230,6 +247,20 @@ def _validate_workflow_steps(
         for payload in payloads
         if payload.get("order") is not None
     )
+    target_refs.update(str(payload["id"]) for payload in payloads if payload.get("id"))
+    collected_fields = {
+        field.get("name") for payload in payloads for field in (payload.get("fields") or [])
+        if isinstance(field, dict)
+    }
+    mapped_fields: set[str] = set()
+    for payload in payloads:
+        mapping = (payload.get("tool_config") or {}).get("output_mapping", {})
+        if not isinstance(mapping, dict):
+            errors.append(f"Step '{payload.get('name')}' output_mapping must be an object.")
+        else:
+            mapped_fields.update(mapping)
+    available_inputs = collected_fields | mapped_fields
+    decision_keys: set[str] = set()
 
     for idx, payload in enumerate(payloads):
         step_name = str(payload.get("name") or "").strip() or f"#{idx + 1}"
@@ -266,6 +297,42 @@ def _validate_workflow_steps(
         if step_type == "tool_call" and not payload.get("tool_id"):
             errors.append(f"Step '{step_name}' is tool_call but has no tool_id.")
 
+        fallback = payload.get("fallback_step_id")
+        if fallback and enforce_branch_targets and str(fallback) not in target_refs:
+            errors.append(f"Step '{step_name}' failure route points to unknown step '{fallback}'.")
+        rules = payload.get("next_step_rules") or []
+        if isinstance(rules, dict):
+            rules = rules.get("rules", [])
+        if step_type == "complete" and (rules or fallback):
+            errors.append(f"Step '{step_name}' is terminal and cannot have outgoing routes.")
+        if step_type == "decision" and not fallback:
+            errors.append(f"Step '{step_name}' decision requires a safe failure route.")
+        if fallback and step_type not in {"decision", "tool_call", "validate"}:
+            errors.append(f"Step '{step_name}' does not support a failure route.")
+        if step_type == "decision":
+            try:
+                decision = DecisionConfig.model_validate(payload.get("tool_config") or {})
+            except ValidationError as exc:
+                paths = ", ".join(".".join(str(part) for part in error["loc"]) or "config" for error in exc.errors())
+                errors.append(f"Step '{step_name}' has invalid decision configuration: {paths}.")
+            else:
+                if decision.result_key in available_inputs or decision.result_key in decision_keys:
+                    errors.append(f"Step '{step_name}' decision result key must be unique and not overwrite a collected field.")
+                decision_keys.add(decision.result_key)
+                if set(decision.input_fields) - available_inputs:
+                    errors.append(f"Step '{step_name}' decision references unknown input fields.")
+            if fallback and enforce_branch_targets:
+                target = next((item for item in payloads if str(item.get("id")) == str(fallback)), None)
+                target = target or next((item for item in payloads if item.get("name") == str(fallback)), None)
+                target = target or next((item for item in payloads if str(item.get("order")) == str(fallback)), None)
+                safe = target and (
+                    target.get("step_type") == "human_review"
+                    or (target.get("step_type") == "collect" and bool(target.get("fields")))
+                    or (target.get("step_type") == "complete" and not (target.get("tool_config") or {}).get("webhook_enabled"))
+                )
+                if not safe:
+                    errors.append(f"Step '{step_name}' decision failure must lead to input, a manual pause, or a completion without a webhook.")
+
         _validate_step_fields(step_name, payload.get("fields"), errors)
         _validate_next_step_rules(
             step_name,
@@ -275,7 +342,69 @@ def _validate_workflow_steps(
             enforce_branch_targets=enforce_branch_targets,
         )
 
+    if enforce_branch_targets and not errors:
+        errors.extend(_validate_automatic_cycles(payloads))
     return errors
+
+
+def _validate_automatic_cycles(steps: list[dict[str, Any]]) -> list[str]:
+    """Reject loops that never stop for input; interactive retry loops remain valid."""
+    ordered = sorted(steps, key=lambda item: item["order"])
+    refs: dict[str, int] = {}
+    # Same precedence as the executor: stable ID, then name, then order.
+    for field in ("order", "name", "id"):
+        for idx, step in reversed(list(enumerate(ordered))):
+            ref = step.get(field)
+            if ref is not None:
+                refs[str(ref)] = idx
+    automatic = {
+        idx for idx, step in enumerate(ordered)
+        if step.get("step_type", "collect") in {"validate", "tool_call", "decision"}
+        and not (step.get("step_type") == "tool_call" and step.get("requires_human_confirm"))
+        or (step.get("step_type", "collect") == "collect" and not step.get("fields"))
+    }
+    graph: dict[int, set[int]] = {}
+    for idx in automatic:
+        step = ordered[idx]
+        rules = step.get("next_step_rules") or []
+        rules = rules.get("rules", []) if isinstance(rules, dict) else rules
+        targets = {refs[str(rule["goto_step"])] for rule in rules}
+        if not any(rule.get("condition") is None for rule in rules) and idx + 1 < len(ordered):
+            targets.add(idx + 1)
+        if step.get("fallback_step_id"):
+            targets.add(refs[str(step["fallback_step_id"])])
+        graph[idx] = targets & automatic
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def visit(idx: int) -> bool:
+        if idx in visiting:
+            return True
+        if idx in visited:
+            return False
+        visiting.add(idx)
+        if any(visit(target) for target in graph.get(idx, set())):
+            return True
+        visiting.remove(idx)
+        visited.add(idx)
+        return False
+
+    if any(visit(idx) for idx in automatic):
+        return ["Workflow has a cycle of automatic steps with no user input or manual pause."]
+    return []
+
+
+async def _validate_tool_ownership(db: AsyncSession, steps: list[Any], tenant_id: str) -> None:
+    from server.models.tool import ToolDefinition
+
+    tool_ids = {_step_payload(step).get("tool_id") for step in steps} - {None, ""}
+    if not tool_ids:
+        return
+    result = await db.execute(select(ToolDefinition.id).where(
+        ToolDefinition.id.in_(tool_ids), ToolDefinition.tenant_id == tenant_id,
+    ))
+    if set(result.scalars().all()) != tool_ids:
+        raise HTTPException(400, "Workflow references an unavailable tool.")
 
 
 def _raise_validation_errors(errors: list[str]) -> None:
@@ -306,6 +435,7 @@ async def create_workflow(
 ):
     if body.steps:
         _raise_validation_errors(_validate_workflow_steps(body.steps))
+        await _validate_tool_ownership(db, body.steps, tenant_id)
 
     wf = Workflow(
         name=body.name,
@@ -423,8 +553,9 @@ async def add_step(
     if not wf:
         raise HTTPException(404, "Workflow not found")
     _raise_validation_errors(
-        _validate_workflow_steps([*wf.steps, body], enforce_branch_targets=False)
+        _validate_workflow_steps([*wf.steps, body])
     )
+    await _validate_tool_ownership(db, [body], tenant_id)
 
     step = WorkflowStep(
         workflow_id=workflow_id,
@@ -466,10 +597,10 @@ async def update_step(
         raise HTTPException(404, "Step not found")
     _raise_validation_errors(
         _validate_workflow_steps(
-            [body if s.id == step_id else s for s in wf.steps],
-            enforce_branch_targets=False,
+            [{**body.model_dump(), "id": step_id} if s.id == step_id else s for s in wf.steps],
         )
     )
+    await _validate_tool_ownership(db, [body], tenant_id)
 
     step.name = body.name
     step.order = body.order
@@ -507,6 +638,7 @@ async def delete_step(
     step = result.scalar_one_or_none()
     if not step:
         raise HTTPException(404, "Step not found")
+    _raise_validation_errors(_validate_workflow_steps([s for s in wf.steps if s.id != step_id]))
     await db.delete(step)
     await db.commit()
 
@@ -536,6 +668,7 @@ async def publish_version(
     )
     steps = list(steps_result.scalars().all())
     _raise_validation_errors(_validate_workflow_steps(steps, require_steps=True))
+    await _validate_tool_ownership(db, steps, tenant_id)
 
     # Build snapshot
     snapshot = {
@@ -554,6 +687,8 @@ async def publish_version(
                 "tool_config": s.tool_config,
                 "on_failure": s.on_failure,
                 "max_retries": s.max_retries,
+                "id": s.id,
+                "fallback_step_id": s.fallback_step_id,
                 "next_step_rules": s.next_step_rules,
                 "requires_human_confirm": s.requires_human_confirm,
                 "risk_level": s.risk_level,

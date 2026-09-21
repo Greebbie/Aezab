@@ -405,6 +405,7 @@ class VectorStoreManager(VectorStoreAdapter):
     def search(
         self, query: str, top_k: int = 5, domain: str | None = None,
         ef_search: int = 128,
+        allowed_chunk_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Search for similar vectors. Returns [{chunk_id, score, domain}].
 
@@ -412,18 +413,34 @@ class VectorStoreManager(VectorStoreAdapter):
             ef_search: HNSW efSearch parameter (higher = more accurate, slower).
                        Ignored for legacy FlatIP indexes.
         """
-        if self._index.ntotal == 0:
+        if self._index.ntotal == 0 or allowed_chunk_ids == set():
             return []
 
         vec = self._embedding.encode([query], mode="query").astype(np.float32)
 
-        # Set HNSW efSearch before querying
-        if self._is_hnsw:
-            self._index.hnsw.efSearch = ef_search
+        if allowed_chunk_ids is not None:
+            import faiss
 
-        # Over-fetch to allow domain filtering
-        fetch_k = min(top_k * 3, self._index.ntotal)
-        scores, indices = self._index.search(vec, fetch_k)
+            # Select authorized positions inside FAISS before choosing top-k.
+            # Post-filtering global top-k lets another tenant crowd out every
+            # result; requesting the entire index instead destroys ANN latency.
+            positions = np.array([
+                idx for idx, chunk_id in enumerate(self._ids)
+                if chunk_id in allowed_chunk_ids and (not domain or self._domains[idx] == domain)
+            ], dtype=np.int64)
+            if not len(positions):
+                return []
+            selector = faiss.IDSelectorBatch(positions)
+            parameters = faiss.SearchParametersHNSW() if self._is_hnsw else faiss.SearchParameters()
+            parameters.sel = selector
+            if self._is_hnsw:
+                parameters.efSearch = ef_search
+            scores, indices = self._index.search(vec, min(top_k, len(positions)), params=parameters)
+        else:
+            if self._is_hnsw:
+                self._index.hnsw.efSearch = ef_search
+            fetch_k = min(top_k * 3, self._index.ntotal)
+            scores, indices = self._index.search(vec, fetch_k)
 
         results = []
         for score, idx in zip(scores[0], indices[0]):
@@ -431,6 +448,8 @@ class VectorStoreManager(VectorStoreAdapter):
                 continue
             chunk_id = self._ids[idx]
             if not chunk_id:
+                continue
+            if allowed_chunk_ids is not None and chunk_id not in allowed_chunk_ids:
                 continue
             if domain and self._domains[idx] != domain:
                 continue

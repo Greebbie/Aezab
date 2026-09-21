@@ -12,7 +12,8 @@ import type {
   EventSubscription, EventSubscriptionCreate, EventSubscriptionUpdate,
   AuthStatus, AuthUser, LoginResponse,
   BackupSummary, BackupCreateResult,
-  ConversationSessionListResponse, ConversationMessageListResponse,
+  ConversationSessionListResponse, ConversationMessageListResponse, ConversationSessionSummary,
+  BusinessSource, BusinessSourceInput, BusinessRecord, BusinessRecordPage, BusinessValues, BusinessQueryResult,
 } from './types';
 
 // ── Token storage ──────────────────────────────────
@@ -203,9 +204,29 @@ export const auditApi = {
 export const sessionsApi = {
   list: (params?: { agent_id?: string; user_id?: string; limit?: number; offset?: number }) =>
     api.get<ConversationSessionListResponse>('/sessions/', { params }),
-  messages: (sessionId: string, params?: { limit?: number; offset?: number }) =>
+  get: (sessionId: string) => api.get<ConversationSessionSummary>(`/sessions/${sessionId}`),
+  messages: (sessionId: string, params?: { limit?: number; offset?: number; latest?: boolean }) =>
     api.get<ConversationMessageListResponse>(`/sessions/${sessionId}/messages`, { params }),
   delete: (sessionId: string) => api.delete(`/sessions/${sessionId}`),
+};
+
+// ── Business data (managed tables and constrained PostgreSQL queries) ──
+export const businessDataApi = {
+  list: () => api.get<BusinessSource[]>('/data-sources/'),
+  get: (id: string) => api.get<BusinessSource>(`/data-sources/${id}`),
+  create: (data: BusinessSourceInput) => api.post<BusinessSource>('/data-sources/', data),
+  update: (id: string, data: Partial<Omit<BusinessSourceInput, 'kind'>>) => api.put<BusinessSource>(`/data-sources/${id}`, data),
+  delete: (id: string) => api.delete(`/data-sources/${id}`),
+  records: (id: string, params: { offset: number; limit: number }) => api.get<BusinessRecordPage>(`/data-sources/${id}/records`, { params }),
+  createRecord: (id: string, values: BusinessValues) => api.post<BusinessRecord>(`/data-sources/${id}/records`, { values }),
+  updateRecord: (id: string, recordId: string, values: BusinessValues) => api.put<BusinessRecord>(`/data-sources/${id}/records/${recordId}`, { values }),
+  deleteRecord: (id: string, recordId: string) => api.delete(`/data-sources/${id}/records/${recordId}`),
+  importCsv: (id: string, file: File) => {
+    const data = new FormData();
+    data.append('file', file);
+    return api.post(`/data-sources/${id}/records/import-csv`, data);
+  },
+  query: (id: string, filters: BusinessValues, limit?: number) => api.post<BusinessQueryResult>(`/data-sources/${id}/query`, { filters, limit }),
 };
 
 // ── Invoke ─────────────────────────────────────────

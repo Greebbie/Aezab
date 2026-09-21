@@ -52,7 +52,7 @@ export default function SetupWizard({ open, onClose }: SetupWizardProps) {
   const handleGoToPlayground = () => {
     markDone();
     onClose();
-    navigate('/playground');
+    navigate(createdAgent ? `/playground?agent=${encodeURIComponent(createdAgent.id)}` : '/playground');
   };
 
   const stepItems = [

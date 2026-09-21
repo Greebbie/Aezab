@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, require_role, require_scope
 from server.config import settings
 from server.engine.vector_rebuild import rebuild_vector_index
 from server.engine.vector_store import EmbeddingModel, get_vector_store
@@ -98,7 +98,10 @@ async def model_status():
     }
 
 
-@router.post("/warmup")
+@router.post(
+    "/warmup",
+    dependencies=[Depends(require_scope("manage")), Depends(require_role("admin"))],
+)
 async def warmup_vector_store():
     """Kick off embedding model download/load in the background and return
     immediately. Repeated calls while a download is in flight are idempotent
@@ -165,7 +168,10 @@ async def vector_stats():
     }
 
 
-@router.post("/rebuild")
+@router.post(
+    "/rebuild",
+    dependencies=[Depends(require_scope("manage")), Depends(require_role("admin"))],
+)
 async def rebuild_index():
     """Trigger a full vector index rebuild from all knowledge chunks.
 

@@ -23,7 +23,7 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.config import settings
@@ -271,9 +271,6 @@ async def get_current_user(
                 detail="Invalid or disabled API key",
             )
 
-        # Update last_used_at
-        api_key_record.last_used_at = datetime.now(timezone.utc)
-
         # Look up the associated user
         user_result = await db.execute(
             select(User).where(User.id == api_key_record.user_id),
@@ -284,6 +281,16 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="API key owner not found or disabled",
             )
+
+        # Authentication must not leave a pending write in the invocation's
+        # session: a later SELECT would autoflush it and hold SQLite's writer
+        # lock throughout the model call. Commit telemetry on its own session.
+        async with AsyncSession(bind=db.bind) as usage_db:
+            await usage_db.execute(
+                update(APIKeyModel).where(APIKeyModel.id == api_key_record.id)
+                .values(last_used_at=datetime.utcnow())
+            )
+            await usage_db.commit()
 
         return {
             "id": user.id,
@@ -301,6 +308,18 @@ async def get_current_user(
         detail="Authentication required. Provide a Bearer token or X-API-Key header.",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+async def require_console_user(
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Credential and account management requires a console JWT, never an API key."""
+    if "api_key_id" in current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account and API key management requires a Bearer login token.",
+        )
+    return current_user
 
 
 def require_role(min_role: str):
@@ -350,7 +369,7 @@ def get_tenant_id(
 #
 # Only API-key-authenticated callers carry "api_key_scopes" (see
 # get_current_user's X-API-Key branch above). JWT-authenticated console
-# users never carry that key and are therefore never restricted here.
+# users never carry that key. Management mutations still enforce their role.
 
 
 def require_scope(scope: str):
@@ -360,8 +379,9 @@ def require_scope(scope: str):
     `scopes` list is non-empty, `scope` must be present in it or the request
     is rejected with 403. An empty list or None scopes means "unrestricted"
     (backward compatible with API keys created before scopes existed).
-    JWT-authenticated console users (no `api_key_scopes` entry at all) are
-    unaffected regardless of this dependency.
+    Management mutations also require at least editor role, including for
+    JWT-authenticated console users. Reading and invoking remain available
+    to viewers; global administration uses an additional admin role gate.
 
     Usage — applied at router-include level so no individual API module has
     to be edited:
@@ -369,6 +389,7 @@ def require_scope(scope: str):
     """
 
     async def _check_scope(
+        request: Request,
         current_user: dict[str, Any] = Depends(get_current_user),
     ) -> dict[str, Any]:
         scopes = current_user.get("api_key_scopes")
@@ -377,6 +398,13 @@ def require_scope(scope: str):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key is missing required scope: '{scope}'",
             )
+        if scope == "manage" and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            role = current_user.get("role", "viewer")
+            if ROLE_HIERARCHY.get(role, 0) < ROLE_HIERARCHY["editor"]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Management changes require editor or admin role.",
+                )
         return current_user
 
     return _check_scope
@@ -420,7 +448,16 @@ async def enforce_rate_limit(
     if limit <= 0:
         return  # 0 or negative disables rate limiting entirely
 
-    key = _rate_limit_key(request, current_user)
+    _consume_rate_limit(_rate_limit_key(request, current_user), limit)
+
+
+async def enforce_login_rate_limit(request: Request) -> None:
+    """Limit password verification before it occupies a worker thread."""
+    host = request.client.host if request.client else "unknown"
+    _consume_rate_limit(f"login-ip:{host}", 10)
+
+
+def _consume_rate_limit(key: str, limit: int) -> None:
     now = time.monotonic()
 
     with _rate_limit_lock:

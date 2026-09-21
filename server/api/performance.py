@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from server.middleware.auth import get_current_user
+from server.middleware.auth import get_current_user, require_role, require_scope
 from server.performance_presets import PRESETS
 from server.runtime_config import runtime_config
 
@@ -34,7 +34,10 @@ async def get_preset(preset_name: str):
     return PRESETS[preset_name]
 
 
-@router.post("/presets/apply")
+@router.post(
+    "/presets/apply",
+    dependencies=[Depends(require_scope("manage")), Depends(require_role("admin"))],
+)
 async def apply_preset(body: ApplyPresetRequest):
     """Apply a performance preset, updating runtime config."""
     if body.preset not in PRESETS:
@@ -51,7 +54,10 @@ async def get_current_config():
     return runtime_config.all()
 
 
-@router.post("/update-config")
+@router.post(
+    "/update-config",
+    dependencies=[Depends(require_scope("manage")), Depends(require_role("admin"))],
+)
 async def update_config(body: UpdateConfigRequest):
     """Update runtime config with partial overrides. Clears active preset label."""
     runtime_config.update(body.config)

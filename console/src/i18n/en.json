@@ -54,6 +54,7 @@
     "dashboard": "Dashboard",
     "playground": "Playground",
     "conversations": "Conversations",
+    "businessData": "Business Data",
     "integrations": "Integrations",
     "agents": "Agents",
     "skills": "Skills",
@@ -136,9 +137,9 @@
     "sessionList": "Sessions",
     "filterByAgent": "Filter by agent",
     "agent": "Agent",
-    "summary": "Summary",
+    "summary": "Opening message",
     "noSummary": "(no message yet)",
-    "messageCount": "Messages",
+    "messageCount": "Turns",
     "startedAt": "Started",
     "lastActive": "Last Active",
     "noSessions": "No conversations yet. They will show up here once a customer starts chatting with an agent.",
@@ -147,7 +148,95 @@
     "noMessages": "This conversation has no messages yet.",
     "roleUser": "Customer",
     "roleAssistant": "Agent",
-    "emptyMessage": "(empty message)"
+    "emptyMessage": "(empty message)",
+    "status": "Status",
+    "user": "User",
+    "refresh": "Refresh",
+    "continue": "Continue in Playground",
+    "older": "Older",
+    "newer": "Newer",
+    "latest": "Latest",
+    "messageRange": "Messages {{start}}–{{end}} of {{total}}",
+    "trace": "Trace",
+    "restoreFailed": "Could not restore this conversation. Start a new session or reopen it from Conversations.",
+    "olderHistory": "Showing the latest 50 messages. Browse older messages in Conversations.",
+    "pauseHelp": "Paused for manual handling. Continuing resumes the request; it does not record staff approval.",
+    "resumeWorkflow": "Continue workflow",
+    "retryWorkflow": "Retry submission",
+    "resumeToken": "resume",
+    "retryToken": "retry",
+    "statuses": {
+      "active": "Active",
+      "in_progress": "In progress",
+      "waiting_input": "Waiting for input",
+      "paused_for_review": "Paused for manual handling",
+      "await_retry": "Submission needs retry",
+      "completed": "Completed",
+      "escalated": "Escalated",
+      "cancelled": "Cancelled",
+      "error": "Needs attention"
+    }
+  },
+  "businessData": {
+    "title": "Business Data",
+    "description": "Give agents access to current orders, tickets, or inventory through a defined set of fields and filters.",
+    "create": "Add data source",
+    "edit": "Edit data source",
+    "source": "Data source",
+    "choose": "Select a data source",
+    "refresh": "Refresh",
+    "empty": "No business data sources. Add a managed table to enter records or import a CSV, or connect an existing PostgreSQL table.",
+    "readOnly": "Your role can inspect records. An editor can manage local tables and run query previews; PostgreSQL configuration requires an administrator.",
+    "name": "Source name",
+    "sourceDescription": "What this data is used for",
+    "kind": "Storage",
+    "kinds": { "table": "Managed table", "postgres": "PostgreSQL table" },
+    "fields": "Exposed fields",
+    "fieldName": "Field name",
+    "fieldType": "Field type",
+    "required": "Required",
+    "addField": "Add field",
+    "removeField": "Remove field",
+    "oneField": "Add at least one field.",
+    "uniqueFields": "Field names must be unique.",
+    "identifierHelp": "Use a letter or underscore, then letters, numbers, or underscores; up to 63 characters.",
+    "filters": "Allowed equality filters",
+    "requiredFilters": "Filters required for every query",
+    "requiredFiltersHelp": "Queries without these values are rejected. Choose fields such as order_id to prevent broad lookups.",
+    "requiredFilter": "Required filter",
+    "optionalFilter": "Optional filter",
+    "maxRows": "Maximum rows per query",
+    "schemaLocked": "This table contains records. Its field definitions are locked; use a new source for a different schema.",
+    "bindHelp": "Bind the generated tool below from Agents → Edit → Capabilities → Tools.",
+    "manageSource": "Manage data source",
+    "disabledHelp": "This source is disabled. Its generated tool and query preview cannot read data until it is enabled.",
+    "records": "Records",
+    "addRecord": "Add record",
+    "editRecord": "Edit record",
+    "deleteRecord": "Delete this record?",
+    "deleteSource": "Delete this source, its local records, and its generated tool?",
+    "noRecords": "No records yet. Add a record or import a CSV whose headers match the field names.",
+    "importCsv": "Import CSV",
+    "csvHelp": "UTF-8 CSV · matching field headers · up to 2 MB / 1,000 rows · appends atomically",
+    "imported": "CSV records imported.",
+    "saved": "Data source saved.",
+    "query": "Query preview",
+    "queryHelp": "Test the same equality filters available to the agent. Returns at most {{count}} rows.",
+    "runQuery": "Run query",
+    "rowCount": "{{count}} matching rows returned",
+    "truncated": "More rows match. Narrow the filters to inspect the remaining data.",
+    "schema": "Fields & connection",
+    "true": "Yes",
+    "false": "No",
+    "pgHelp": "Connect one fixed table using a PostgreSQL account with SELECT permission only. Agents can query only the fields and equality filters defined here.",
+    "dsn": "PostgreSQL connection string",
+    "pgSchema": "Database schema",
+    "pgTable": "Table name",
+    "tenantColumn": "Tenant column",
+    "tenantHelp": "When configured, every query restricts this column to the authenticated platform tenant. The agent cannot override it.",
+    "credentialsSaved": "Credentials saved",
+    "credentialsMissing": "Credentials missing",
+    "keepCredentials": "Credentials are saved and never returned. Leave blank to keep them; enter a new connection string to replace them."
   },
   "agents": {
     "title": "Agent Management",
@@ -229,8 +318,9 @@
       "validate": "Validate",
       "tool_call": "Tool Call",
       "confirm": "Confirm",
-      "human_review": "Human Review",
-      "complete": "Complete"
+      "human_review": "Manual pause",
+      "complete": "Complete",
+      "decision": "Jev decision"
     },
     "failureStrategies": {
       "retry": "Retry",
@@ -290,7 +380,60 @@
     "webhookHeadersLabel": "Headers (JSON, optional)",
     "webhookHeadersExtra": "Format: {\"Authorization\":\"Bearer xxx\"}",
     "editStepModalTitle": "Edit Step - {{name}}",
-    "addStepModalTitle": "Add Step - {{name}}"
+    "addStepModalTitle": "Add Step - {{name}}",
+    "graph": {
+      "open": "Open flow",
+      "help": "Click a step or route to edit. Drag a blue connector to choose the next step, or a red connector for failure. Changes take effect after Save. Dashed lines follow step order.",
+      "empty": "Add a collection step, then the action and completion steps.",
+      "default": "Otherwise",
+      "implicit": "Next in order",
+      "failure": "On failure / uncertain",
+      "ruleOrder": "Conditions are checked from top to bottom. First match wins. Without an Otherwise route, execution follows step order. To stop, connect to a Complete step.",
+      "conditionNumber": "Condition {{n}}",
+      "moveUp": "Move up",
+      "disconnect": "Remove route",
+      "field": "Collected field",
+      "operator": "Comparison",
+      "value": "Value",
+      "target": "Go to step",
+      "addCondition": "Add condition",
+      "addDefault": "Add Otherwise route",
+      "failureHelp": "Used before the failure strategy. For decisions, choose a safe input step, manual pause, or completion without an external submission.",
+      "draftConnection": "This connection is a draft. Check its rule and target, then Save to apply it.",
+      "manualPauseHelp": "Pauses this conversation for manual handling. The requester can resume by saying “resume”. This is not authenticated staff approval.",
+      "invalidOptions": "Select options must be a valid JSON array.",
+      "invalidHeaders": "Webhook headers must be a valid JSON object.",
+      "operators": {
+        "eq": "Equals",
+        "ne": "Does not equal",
+        "gt": "Greater than",
+        "gte": "At least",
+        "lt": "Less than",
+        "lte": "At most",
+        "contains": "Contains",
+        "not_contains": "Does not contain",
+        "in": "Is one of",
+        "not_in": "Is not one of",
+        "regex": "Matches regex"
+      },
+      "requesterConfirm": "Ask requester before calling this tool",
+      "requesterConfirmHelp": "Requires explicit confirmation in this conversation. This does not replace staff authorization."
+    },
+    "decision": {
+      "explanation": "Jev selects one configured outcome from the named fields. Accepted outcomes become a field you can route on. Enable the Typesafe connection on your server before running this step.",
+      "instructions": "Decision instructions",
+      "instructionsPlaceholder": "Classify this support request by the action the customer needs. Choose other when the evidence is insufficient.",
+      "inputs": "Fields sent to Jev",
+      "inputsHelp": "Only these collected values are sent. Chat history and unrelated fields are excluded.",
+      "resultKey": "Store chosen outcome as",
+      "keyHelp": "Use a letter followed by letters, numbers or underscores.",
+      "choice": "Outcome value",
+      "addChoice": "Add outcome",
+      "confidence": "Minimum confidence",
+      "probability": "Minimum outcome probability",
+      "safeFallback": "Keep an “other” outcome. Low confidence, low probability, other, missing input or provider errors take the failure route. Model confidence does not grant permission to act.",
+      "otherDescription": "Insufficient evidence or none of the configured outcomes"
+    }
   },
   "knowledge": {
     "title": "Knowledge Base",
@@ -639,8 +782,8 @@
     "stepCreateAgent": "Create an Agent",
     "stepDone": "Done",
     "step1": {
-      "title": "Connect an AI model — it's your agent's brain",
-      "hint": "Pick a provider below. Most only need an API key to get started.",
+      "title": "Connect a model",
+      "hint": "Choose a provider and test the connection. The test sends a short message and uses your provider's normal billing.",
       "fillRequired": "Fill in the model name and address before testing.",
       "testButton": "Test Connection",
       "testSuccess": "Connected — the model replied successfully.",
@@ -658,23 +801,23 @@
     "providers": {
       "dashscope": {
         "name": "Qwen (DashScope)",
-        "description": "From Alibaba Cloud. Direct access in mainland China, free credits on sign-up."
+        "description": "Alibaba Cloud's OpenAI-compatible DashScope endpoint."
       },
       "zhipu": {
         "name": "Zhipu GLM",
-        "description": "GLM models from Zhipu AI, strong at Chinese conversation."
+        "description": "Connect GLM models through Zhipu's API."
       },
       "minimax": {
         "name": "MiniMax",
-        "description": "MiniMax's OpenAI-compatible API, good at reasoning tasks."
+        "description": "Connect models through MiniMax's OpenAI-compatible API."
       },
       "openai": {
         "name": "OpenAI",
         "description": "GPT models directly from OpenAI. Needs an API key with available credit."
       },
       "ollama": {
-        "name": "Ollama (Local, Free)",
-        "description": "Runs on your own machine, no API key or internet required. Start it with docker compose --profile local-llm up -d, or use a locally installed Ollama."
+        "name": "Ollama (Local)",
+        "description": "Connect to a running Ollama service. Download a model before the first use."
       },
       "custom": {
         "name": "Custom",
@@ -683,16 +826,16 @@
     },
     "fields": {
       "baseUrl": "Service Address",
-      "baseUrlHelp": "The API address for your model service.",
+      "baseUrlHelp": "Use an address reachable by the Aezab server. Inside Docker, localhost refers to the container itself.",
       "apiKey": "API Key",
       "apiKeyHelp": "Found on your provider's account or API keys page.",
       "apiKeyPlaceholder": "Paste your API key here",
       "model": "Model Name",
-      "modelHelp": "Not sure? The default value usually works."
+      "modelHelp": "Use a model ID available to your account or already downloaded locally."
     },
     "step2": {
       "title": "Create your first agent",
-      "hint": "Pick a template that fits your use case — it comes pre-configured and ready to use.",
+      "hint": "A template creates an agent and its starter workflow. Connect your business information and adjust it as needed.",
       "loadFailed": "Failed to load agent templates.",
       "createFailed": "Failed to create the agent.",
       "namePlaceholder": "Agent name (optional)",
@@ -700,10 +843,10 @@
       "createButton": "Create"
     },
     "step3": {
-      "title": "\"{{name}}\" is ready",
-      "titleGeneric": "Your agent is ready",
+      "title": "\"{{name}}\" has been created",
+      "titleGeneric": "Your agent has been created",
       "goToPlayground": "Try a Conversation",
-      "knowledgeHint": "Want it to know your business better? Upload documents on the Knowledge page."
+      "knowledgeHint": "Select knowledge sources or business data query tools in the agent's Capabilities tab. Connect your service API when you need to submit tickets or bookings."
     }
   },
   "errors": {

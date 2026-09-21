@@ -37,7 +37,7 @@ class StepCreate(BaseModel):
     fallback_step_id: str | None = None
     requires_human_confirm: bool = False
     risk_level: str = "info"
-    next_step_rules: dict[str, Any] | None = None
+    next_step_rules: dict[str, Any] | list[dict[str, Any]] | None = None
 
 
 class StepOut(BaseModel):

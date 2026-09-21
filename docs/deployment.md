@@ -1,6 +1,6 @@
-# HlAB 生产部署指南
+# Aezab 部署指南
 
-> 面向要把 HlAB（Aezab）部署到生产环境的运维/后端工程师。覆盖：上线前检查清单、
+> 面向部署 Aezab 的运维与后端工程师，介绍部署检查、
 > 单进程架构限制（关键）、反向代理下的 SSE 配置、Widget 部署安全、数据备份与迁移、
 > 环境变量前缀。集成对接（SDK/API/Webhook/Widget 嵌入）见
 > [`docs/integration.md`](./integration.md)；数据库迁移细节见
@@ -12,8 +12,11 @@
 
 ## 1. 上线前检查清单
 
-生产环境启动前，至少确认以下三项（`.env.example` / `README_zh.md` 里默认值是为本地开发
-准备的，**不能**直接照搬到生产）：
+默认 Compose 只启动一个 Aezab 服务，SQLite 数据、上传文件、密钥和向量索引保存在
+`aezab-data` volume。运行时没有使用 Redis，无需为默认部署启动 Redis。选择云模型时
+也无需启动 Ollama；本地模型使用 `local-llm` profile，首次下载模型仍需要网络。
+
+生产环境启动前，确认认证和允许的浏览器来源，并选择密钥的保管方式：
 
 ```bash
 # 关闭开发免鉴权旁路——保持为 true 时，所有请求都会被当作 mock admin 放行
@@ -24,8 +27,9 @@ AEZAB_DISABLE_AUTH=false
 #  allow_credentials=False，这本身就说明 "*" 不是一个安全的生产配置）
 AEZAB_CORS_ORIGINS=https://console.yourdomain.com,https://yourdomain.com
 
-# 强随机 JWT 签名密钥——绝不要使用默认的 "change-me-in-production"
-AEZAB_SECRET_KEY=<random-64-chars>
+# 可选：通过 secret manager 提供稳定的强随机密钥。
+# 不设置时，首次启动自动生成并持久保存到 /app/data/secret_key。
+# AEZAB_SECRET_KEY=<random-64-chars>
 ```
 
 其余检查项：
@@ -41,19 +45,60 @@ AEZAB_SECRET_KEY=<random-64-chars>
   `scopes`。对外暴露给客户端/Widget/第三方系统的 Key 只给 `invoke` 作用域；只有控制台
   管理员本人使用的 Key 才给 `manage` 作用域。空 `scopes` 列表等价于不限制（向后兼容旧
   Key），生产环境新建的 Key 都应该显式带上 scopes，不要留空。
-- **API Key 明文存储（已知限制）**：Key 目前以哈希存储（`hash_api_key`，见
-  `server/middleware/auth.py`），但 LLM/Embedding/ASR 等第三方供应商的凭证目前是明文
-  存在数据库里（`llm_configs` 等表）。生产环境建议：数据库本身加密存储（磁盘加密 /
-  云厂商托管数据库的静态加密），并定期轮换这些凭证；一旦怀疑泄露，立即在对应供应商
-  控制台吊销并重新生成。
+- **凭证与备份**：调用 Aezab 的 API Key 以哈希存储；`llm_configs.api_key` 通过
+  `server/engine/secrets_store.py` 使用 Fernet 加密，旧明文记录会在启动时迁移。
+  加密依赖 `AEZAB_SECRET_KEY` 或自动生成的 `data/secret_key`；丢失或直接更换它会使
+  已保存的凭证无法解密，需要重新录入。当前覆盖 LLM key、HTTP 工具 token 和业务数据源 DSN；
+  环境变量与 ASR 配置不在此保证内。备份会包含本地密钥文件，须按含凭证的数据保管；
+  如果密钥由环境注入，还需单独备份该密钥。不要将密钥与备份公开分发。
 - **限流**：`AEZAB_RATE_LIMIT_PER_MINUTE`（默认 60，每个 API Key/用户/IP 每分钟请求数）
   按预期流量调整；见第 4 节关于 Widget 场景的限流依赖。
+
+登录另有每 IP 每分钟 10 次的限制，密码计算在线程池运行。首次管理员注册的检查与提交
+在同一进程内串行，避免两个并发匿名请求同时成为首个管理员。反向代理应正确配置可信
+来源地址，并限制请求体大小；应用处理文件内容的大小检查不替代网关的上传限制。
+
+订阅 callback 在每次发送前解析地址，并连接到已经检查过的 IP，保留原始 Host 与 TLS
+证书主机名；不跟随重定向，不读取环境代理。内部地址默认禁用，自部署需要向内网发事件时
+才设置 `AEZAB_ALLOW_INTERNAL_WEBHOOKS=true`。这是订阅通知的边界；由运维明确配置的业务
+HTTP 工具和数据库连接仍可能需要内网，不能把两类连接的权限混为一谈。
+
+### 两种数据库配置
+
+默认 SQLite 适合单进程、小规模使用。已有平台 PostgreSQL 时设置 `AEZAB_DATABASE_URL`；
+新部署可叠加 `docker-compose.postgres.yml`。Agent 查询的业务 PostgreSQL 则在控制台
+Business Data 中单独配置，它有独立只读账号、字段与租户约束。完整操作见
+[业务数据与数据库配置](business-data.md)。更换平台数据库不会自动搬运旧 SQLite 数据。
+
+### 容器权限与升级
+
+镜像默认安装 CPU PyTorch，以 UID/GID `10001:10001` 运行。应用数据挂载在 `/app/data`，
+模型缓存挂载在 `/home/aezab/.cache/huggingface`。Compose 删除 Linux capabilities 并启用
+`no-new-privileges`；镜像健康检查访问无需认证、不会调用模型的 `/health`。
+带 `check_llm=true` 的付费连通性探测要求管理员及管理权限。
+
+新建 named volume 会继承镜像目录的权限。旧版 root 容器留下的 volume 或宿主机 bind mount
+可能仍属于 root。升级前先备份，在停止应用后检查**该部署实际挂载的目录/volume**，只把
+对应的数据与缓存目录改为 UID/GID `10001:10001`，然后重新启动并检查健康状态。
+不要对项目外目录批量改权限，也不要删除旧 volume 来解决权限错误。
 
 ---
 
 ## 2. 单进程架构限制（关键，务必先读）
 
-HlAB 的两个核心可靠性机制目前是 **进程内内存态**，不是跨进程共享的：
+同时进入 invoke 的请求默认最多 16 个（包括等待同一会话的请求），超过返回 `503`。
+同一会话的等待默认最多 10 秒，超时返回 `429`，两者均带 `Retry-After: 1`。
+分别通过 `AEZAB_MAX_CONCURRENT_INVOKES` 和 `AEZAB_SESSION_WAIT_TIMEOUT_SECONDS` 调整。
+每个 SSE 流的事件队列默认上限为 128（`AEZAB_SSE_QUEUE_MAXSIZE`）；慢客户端会产生背压，
+断开会取消流式任务并释放连接。整个流还有“管道超时 + 5 秒发送余量”的期限，持续不读取的
+客户端不能永久占住名额；期限到达后连接关闭，客户端必须以是否收到最终 `done` 判断结果。
+限制值需要结合实际模型耗时与内存测量，不能据此推算 QPS。
+
+新会话创建只做短事务提交，等待模型时不提前 flush 会话修改。SSE 任务持有独立数据库
+session，并在任务结束时关闭；停机时摘要和 callback 后台任务有短暂清理期，随后取消。
+这些改动解决连接占用和等待无界的问题，但不提供进程崩溃后的 callback 重放。
+
+Aezab 的会话协调机制保存在**进程内存**中：
 
 - **会话锁**（`server/engine/request_guard.py::session_lock`）：序列化同一个
   `session_id` 的并发 `/invoke` 调用，避免消息写入/`workflow_state` 更新交叉错乱。
@@ -76,20 +121,18 @@ upgrade path — not implemented in this wave.
 
 **推论（务必遵守）**：
 
-- **今天支持的部署形态**：单副本（Dockerfile 默认的 `uvicorn server.main:app`，单进程
-  单 worker），或者带**粘性会话**（同一个客户端/会话固定路由到同一个后端实例）的多副本
-  负载均衡。
+- **默认部署形态**：单副本（Dockerfile 默认的 `uvicorn server.main:app`，单进程
+  单 worker）。粘性会话只能维持部分会话内保证，不能让不同进程共享租户幂等键或
+  限流额度，也不能在进程重启后保留这些内存状态。
 - **不支持**：无粘性会话的多副本部署——不同请求可能落到不同进程，`session_lock` 形同
   虚设（并发写入可能交叉），`Idempotency-Key` 缓存和限流计数器在各个进程里各算各的
   （同一个 Key 在两个进程各能跑满一次限额，等于限流翻倍失效）。
-- **今天绝对不要**用 `uvicorn ... --workers N`（N>1）启动本服务——单机内多 worker 本质
-  上就是无粘性会话的多进程，同样会破坏上述两个机制。要提升单机吞吐，横向扩容多个
-  Docker 副本 + 粘性会话负载均衡，而不是加 `--workers`。
+- 不要直接用 `uvicorn ... --workers N`（N>1）或增加 Docker 副本来扩大容量。
+  它们都会改变现有会话锁、幂等与限流的保证；扩容前须实现共享状态并验证故障恢复。
 - **已文档化的升级路径**：如果确实需要无粘性会话的多副本/多实例部署，需要把
   `session_lock` 换成 Redis 分布式锁、把幂等缓存和限流计数器换成 Redis TTL
-  缓存/计数器——这是已知的下一步，本 wave 尚未实现。`docker-compose.yml` 里已经带了
-  一个 `redis` 服务，但目前只是预留依赖，`request_guard.py` / `middleware/auth.py`
-  尚未接入它。
+  缓存/计数器——目前尚未实现。仅安装 Redis 或填写 `AEZAB_REDIS_URL` 不会启用共享
+  状态；`request_guard.py` / `middleware/auth.py` 尚未接入它。
 
 ---
 
@@ -153,11 +196,10 @@ Widget 是纯前端脚本，`data-api-key` 会原样出现在页面 HTML 源码�
 
 1. **最小权限 Key**：只给 `invoke` 作用域，绝不要把 `manage` 作用域的 Key 用在 Widget
    上——泄露一个 `manage` Key 意味着任何人都能改你的 Agent 配置、删你的知识库。
-2. **CORS 白名单是真正的防线**：把 `AEZAB_CORS_ORIGINS` 精确设置为托管这个 Widget 的
-   客户网站域名（例如 `https://customer-site.com`），而不是 `*`。浏览器的同源策略会
-   阻止其他域名的网页脚本用这个 Key 发起跨域请求——即使 Key 本身被人肉眼看到抄走，只要
-   对方不能从一个被允许的 origin 发起请求，浏览器就会在预检阶段拦下来。这是唯一能
-   限制「别的网站盗用这个 Key」的机制，Key 自身不带来源限制。
+2. **限制浏览器来源**：把 `AEZAB_CORS_ORIGINS` 精确设置为托管这个 Widget 的客户网站
+   域名（例如 `https://customer-site.com`）。CORS 限制浏览器中的跨域脚本，但不是
+   API 认证：拿到 Key 的人仍能用 curl 或服务端程序直接调用，Origin 也可伪造。
+   需要保密的 Key 应由客户自己的后端保存和调用；公开 Widget Key 必须按公开凭证管理。
 3. **限流兜底 + 及时轮换**：即使前两层都做到位，仍然依赖内置的 `/invoke` 限流
    （`AEZAB_RATE_LIMIT_PER_MINUTE`）防止单个 Key 被脚本刷爆。一旦监控/审计发现某个
    Widget 用的 Key 调用量异常，直接在控制台禁用旧 Key、生成新 Key、更新客户网页上的
@@ -211,15 +253,15 @@ Widget 是纯前端脚本，`data-api-key` 会原样出现在页面 HTML 源码�
 
 ## 附：已知限制（生产前应知悉）
 
-- API Key（用户认证用）本身以哈希存储；但 LLM/Embedding/ASR 供应商凭证目前明文存于
-  数据库——见第 1 节的建议（磁盘加密 + 定期轮换）。
+- API Key 本身以哈希存储，LLM 配置密钥以 Fernet 加密；其他凭证与含密钥的备份仍需
+  限制访问。加密范围与密钥恢复约束见第 1 节。
 - 控制台前端认证是 JWT 登录 + 角色（`admin` / `editor` / `viewer`），已经是一个真实的
   多用户体系（`console/src/AuthGate.tsx`、`console/src/pages/LoginPage.tsx`、
-  `server/api/auth.py`），不是密码锁占位方案；如果需要企业 SSO，可以把 Aezab 放在
+  `server/api/auth.py`）；如果需要企业 SSO，可以把 Aezab 放在
   反向代理网关后面，或者在 `server/api/auth.py` 基础上接入 OAuth/SAML。
 - 忘记管理员密码目前没有内置的「找回密码」流程：需要运维直接操作数据库（删除或重置
   `users` 表里对应记录的 `password_hash`，或整库重置），详见
   [`docs/troubleshooting.md`](./troubleshooting.md) 第「控制台打不开 / 一直
   401」条——操作前务必先备份 `./data/aezab.db`。
-- 多租户隔离（`tenant_id`）目前主要在数据查询层面生效；跨租户的 JWT 校验强化是后续
-  计划项，见项目根目录 `CLAUDE.md` 的 Future Optimization 部分。
+- 资源访问按认证用户所属租户校验，Agent 的模型和能力引用也必须属于同一租户。
+  终端客户的数据权限仍由接入的业务系统校验，详见 [业务数据权限](business-data.md)。

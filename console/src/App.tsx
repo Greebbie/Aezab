@@ -18,6 +18,7 @@ import {
   HeartOutlined,
   LinkOutlined,
   LogoutOutlined,
+  DatabaseOutlined,
 } from '@ant-design/icons';
 
 import AgentsPage from './pages/AgentsPage';
@@ -33,6 +34,7 @@ import SettingsPage from './pages/SettingsPage';
 import SkillsPage from './pages/SkillsPage';
 import HealthPage from './pages/HealthPage';
 import IntegrationsPage from './pages/IntegrationsPage';
+import BusinessDataPage from './pages/BusinessDataPage';
 import { LANGUAGE_STORAGE_KEY } from './i18n';
 import { useAuth } from './AuthGate';
 import { SetupWizard, SETUP_DONE_STORAGE_KEY, OPEN_SETUP_WIZARD_EVENT } from './components/setup';
@@ -86,6 +88,7 @@ export default function App() {
     { key: '/skills', icon: <AppstoreOutlined />, label: t('nav.skills') },
     { key: '/workflows', icon: <ApartmentOutlined />, label: t('nav.workflows') },
     { key: '/knowledge', icon: <BookOutlined />, label: t('nav.knowledge') },
+    { key: '/business-data', icon: <DatabaseOutlined />, label: t('nav.businessData') },
     { key: '/tools', icon: <ApiOutlined />, label: t('nav.tools') },
     { key: '/llm-configs', icon: <ThunderboltOutlined />, label: t('nav.llmConfigs') },
     { key: '/audit', icon: <AuditOutlined />, label: t('nav.audit') },
@@ -144,6 +147,7 @@ export default function App() {
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/workflows" element={<WorkflowsPage />} />
               <Route path="/knowledge" element={<KnowledgePage />} />
+              <Route path="/business-data" element={<BusinessDataPage />} />
               <Route path="/skills" element={<SkillsPage />} />
               <Route path="/tools" element={<ToolsPage />} />
               <Route path="/llm-configs" element={<LLMConfigsPage />} />

@@ -25,13 +25,47 @@ import time
 from collections import OrderedDict
 from typing import Any
 
+from server.config import settings
+
+
+class InvokeCapacityExceeded(Exception):
+    """The process has no capacity for another active or queued invocation."""
+
+
+class SessionWaitTimeout(Exception):
+    """An invocation waited too long for its session's preceding turn."""
+
+
+_invoke_guard = threading.Lock()
+_active_invokes = 0
+
+
+def active_invoke_count() -> int:
+    with _invoke_guard:
+        return _active_invokes
+
+
+@contextlib.asynccontextmanager
+async def invoke_slot():
+    """Bound admitted requests, including session waiters; reject without queueing."""
+    global _active_invokes
+    with _invoke_guard:
+        if _active_invokes >= settings.max_concurrent_invokes:
+            raise InvokeCapacityExceeded
+        _active_invokes += 1
+    try:
+        yield
+    finally:
+        with _invoke_guard:
+            _active_invokes -= 1
+
 # ── C-T1: per-session serialization ─────────────────────────────────
 #
 # Two concurrent /invoke (or /invoke/stream) calls for the SAME session_id
 # must run serially — otherwise their message writes / workflow_state
 # mutations can interleave. Calls for DIFFERENT sessions (or a brand-new
-# session with session_id=None, nothing to race with yet) proceed fully
-# concurrently.
+# session with session_id=None, nothing to race with yet) may proceed
+# concurrently within the process-wide admission limit.
 #
 # Each entry is (asyncio.Lock, refcount). refcount tracks how many
 # in-flight callers currently hold or are waiting on that session's lock;
@@ -49,7 +83,7 @@ def active_session_lock_count() -> int:
 
 
 @contextlib.asynccontextmanager
-async def session_lock(session_id: str | None):
+async def session_lock(session_id: str | None, *, timeout_seconds: float | None = None):
     """Serialize concurrent invocations for the same session_id.
 
     Usage:
@@ -71,10 +105,20 @@ async def session_lock(session_id: str | None):
         entry[1] += 1
         lock = entry[0]
 
+    acquired = False
     try:
-        async with lock:
-            yield
+        try:
+            if timeout_seconds is None:
+                await lock.acquire()
+            else:
+                await asyncio.wait_for(lock.acquire(), timeout=timeout_seconds)
+            acquired = True
+        except asyncio.TimeoutError as exc:
+            raise SessionWaitTimeout from exc
+        yield
     finally:
+        if acquired:
+            lock.release()
         with _session_locks_guard:
             current = _session_locks.get(session_id)
             if current is not None and current[0] is lock:

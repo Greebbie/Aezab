@@ -13,6 +13,8 @@ Aezab 是当前的公开品牌名。`HlAB`（Headless AI Agent Builder）是历�
 
 ## 核心概念
 
+工作流图形连接、条件编辑和 Jev 判定节点见 [判定节点配置](jev-decisions.md)。Jev 是独立于对话模型的可选云服务，不填写在 OpenAI-compatible 模型配置中。
+
 | 概念 | 说明 |
 | --- | --- |
 | Agent | 面向一个业务场景的运行单元，包含提示词、模型配置、能力绑定和运行策略。 |

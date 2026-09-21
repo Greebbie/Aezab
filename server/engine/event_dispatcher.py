@@ -38,6 +38,21 @@ from server.models.subscription import EventSubscription
 _background_tasks: set[asyncio.Task] = set()
 
 
+async def shutdown_event_tasks(timeout_seconds: float = 5.0) -> None:
+    """Drain current deliveries, then cancel and await those beyond the deadline.
+
+    This only owns process-local tasks; it cannot recover callbacks after a crash.
+    """
+    tasks = set(_background_tasks)
+    if not tasks:
+        return
+    _, pending = await asyncio.wait(tasks, timeout=timeout_seconds)
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    _background_tasks.difference_update(tasks)
+
+
 class WebhookTargetBlockedError(ValueError):
     """Raised when a subscription URL resolves to a blocked (internal) target."""
 
@@ -50,38 +65,43 @@ def _allow_internal_webhooks() -> bool:
 
 
 def check_webhook_url(url: str) -> None:
-    """Validate a subscription URL against SSRF. Checked both at create time
-    (fast feedback) and at delivery time (authoritative — defends against DNS
-    rebinding, where a hostname resolves to a public IP at create and an
-    internal one at delivery). Raises WebhookTargetBlockedError if blocked.
-    """
+    """Validate configuration; delivery also pins the checked IP per attempt."""
+    _resolve_webhook_target(url)
+
+
+def _resolve_webhook_target(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise WebhookTargetBlockedError("url must start with http:// or https://")
     host = parsed.hostname
     if not host:
         raise WebhookTargetBlockedError("url has no host")
-    if _allow_internal_webhooks():
-        return
+    if parsed.username is not None or parsed.password is not None:
+        raise WebhookTargetBlockedError("url must not contain credentials")
 
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as e:
         raise WebhookTargetBlockedError(f"cannot resolve host: {host}") from e
 
+    addresses = []
     for info in infos:
         addr = info[4][0]
         try:
             ip = ipaddress.ip_address(addr)
-        except ValueError:
-            continue
-        if (
-            ip.is_loopback or ip.is_private or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+        except ValueError as exc:
+            raise WebhookTargetBlockedError("resolver returned an invalid address") from exc
+        if not _allow_internal_webhooks() and (
+            not ip.is_global or ip.is_multicast or ip.is_reserved
+            or (isinstance(ip, ipaddress.IPv6Address) and ip.is_site_local)
         ):
             raise WebhookTargetBlockedError(
                 f"url resolves to a blocked internal address ({addr})"
             )
+        addresses.append(str(ip))
+    if not addresses:
+        raise WebhookTargetBlockedError("host has no resolved addresses")
+    return addresses[0]
 
 logger = logging.getLogger(__name__)
 
@@ -102,16 +122,6 @@ def _sign(secret: str, raw_body: bytes) -> str:
 async def _deliver_one(sub: EventSubscription, event_type: str, body_bytes: bytes) -> None:
     """POST to a single subscription with retry. Never raises — logs on
     final exhaustion."""
-    # Authoritative SSRF check at delivery time (defends against DNS rebinding
-    # between create-time validation and now). check_webhook_url does a
-    # blocking DNS lookup (socket.getaddrinfo) — run it off the event loop
-    # thread so a slow/hanging resolver can't stall the loop.
-    try:
-        await asyncio.to_thread(check_webhook_url, sub.url)
-    except WebhookTargetBlockedError as e:
-        logger.warning("Skipping delivery to blocked webhook %s: %s", sub.id, e)
-        return
-
     headers = {
         "Content-Type": "application/json",
         "X-HlAB-Event": event_type,
@@ -121,11 +131,23 @@ async def _deliver_one(sub: EventSubscription, event_type: str, body_bytes: byte
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES + 1):
         try:
-            async with httpx.AsyncClient(timeout=DELIVERY_TIMEOUT_S) as client:
-                resp = await client.post(sub.url, content=body_bytes, headers=headers)
+            address = await asyncio.wait_for(
+                asyncio.to_thread(_resolve_webhook_target, sub.url), timeout=DELIVERY_TIMEOUT_S,
+            )
+            original = httpx.URL(sub.url)
+            # Connect to the validated address; preserve HTTP Host and TLS
+            # certificate/SNI verification for the configured hostname.
+            target = original.copy_with(host=address)
+            attempt_headers = {**headers, "Host": original.netloc.decode("ascii")}
+            async with httpx.AsyncClient(timeout=DELIVERY_TIMEOUT_S, trust_env=False, follow_redirects=False) as client:
+                resp = await client.post(target, content=body_bytes, headers=attempt_headers,
+                                         extensions={"sni_hostname": original.raw_host.decode("ascii")})
             if resp.is_success:
                 return
             last_error = RuntimeError(f"HTTP {resp.status_code}")
+        except WebhookTargetBlockedError as e:
+            logger.warning("Skipping delivery to blocked webhook %s: %s", sub.id, e)
+            return
         except Exception as e:  # noqa: BLE001 - any transport failure is retryable
             last_error = e
 
@@ -193,7 +215,7 @@ def emit_event(tenant_id: str, event_type: str, payload: dict[str, Any]) -> None
             logger.error("emit_event: dispatch_event raised unexpectedly: %s", e)
 
     try:
-        task = asyncio.create_task(_run())
+        task = asyncio.get_running_loop().create_task(_run())
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
     except RuntimeError:

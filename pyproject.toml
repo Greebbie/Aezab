@@ -2,6 +2,7 @@
 name = "aezab"
 version = "0.1.0"
 description = "Self-hosted agent builder for knowledge bases, workflows, business APIs, voice input, and integrations"
+license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110.0",

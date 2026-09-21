@@ -62,7 +62,17 @@ export default function AgentTemplateStep({ llmConfigId, onAgentCreated, onSkip 
             <Col xs={24} md={8} key={template.id}>
               <Card
                 hoverable
-                onClick={() => setSelectedId(template.id)}
+                role="button"
+                tabIndex={creating ? -1 : 0}
+                aria-pressed={selectedId === template.id}
+                aria-disabled={creating}
+                onClick={() => { if (!creating) setSelectedId(template.id); }}
+                onKeyDown={(event) => {
+                  if (!creating && (event.key === 'Enter' || event.key === ' ')) {
+                    event.preventDefault();
+                    setSelectedId(template.id);
+                  }
+                }}
                 style={{
                   cursor: 'pointer',
                   height: '100%',
@@ -79,6 +89,8 @@ export default function AgentTemplateStep({ llmConfigId, onAgentCreated, onSkip 
 
       {selectedId && (
         <Input
+          aria-label={t('setup.step2.namePlaceholder')}
+          disabled={creating}
           value={customName}
           onChange={(e) => setCustomName(e.target.value)}
           placeholder={t('setup.step2.namePlaceholder')}
@@ -87,7 +99,7 @@ export default function AgentTemplateStep({ llmConfigId, onAgentCreated, onSkip 
       )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <Button type="link" onClick={onSkip}>
+        <Button type="link" onClick={onSkip} disabled={creating}>
           {t('setup.step2.skip')}
         </Button>
         <Space>

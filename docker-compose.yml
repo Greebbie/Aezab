@@ -6,30 +6,19 @@ services:
     env_file: .env
     environment:
       - AEZAB_DATABASE_URL=${AEZAB_DATABASE_URL:-${HLAB_DATABASE_URL:-sqlite+aiosqlite:///./data/aezab.db}}
-      - AEZAB_REDIS_URL=${AEZAB_REDIS_URL:-${HLAB_REDIS_URL:-redis://redis:6379/0}}
       - AEZAB_HF_ENDPOINT=${AEZAB_HF_ENDPOINT:-${HLAB_HF_ENDPOINT:-https://hf-mirror.com}}
       - HF_ENDPOINT=${AEZAB_HF_ENDPOINT:-${HLAB_HF_ENDPOINT:-https://hf-mirror.com}}
     volumes:
       - aezab-data:/app/data
-      - aezab-model-cache:/root/.cache/huggingface
-    depends_on:
-      - redis
+      - aezab-model-cache:/home/aezab/.cache/huggingface
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     # Cap the container's json-file log on disk: unbounded logs are a
     # common cause of an unattended self-hosted install filling its disk
     # and taking the whole site down.
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
-    # Cap the container's json-file log on disk (see `server` service comment).
     logging:
       driver: json-file
       options:

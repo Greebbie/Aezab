@@ -12,3 +12,4 @@ export * from './subscription';
 export * from './auth';
 export * from './backup';
 export * from './session';
+export * from './businessData';

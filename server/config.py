@@ -28,6 +28,16 @@ def env_str(name: str, default: str) -> str:
 
 
 class Settings(BaseSettings):
+    # Optional cloud decision provider; deliberately independent of the chat LLM.
+    typesafe_enabled: bool = env_field(False, "TYPESAFE_ENABLED")
+    typesafe_api_key: str = Field("", validation_alias=AliasChoices(
+        "AEZAB_TYPESAFE_API_KEY", "TYPESAFE_API_KEY", "HLAB_TYPESAFE_API_KEY",
+    ), repr=False)
+    typesafe_model: str = env_field("jev-1.13.0", "TYPESAFE_MODEL")
+    typesafe_timeout: float = Field(10.0, gt=0, le=30, validation_alias=AliasChoices(
+        "AEZAB_TYPESAFE_TIMEOUT", "HLAB_TYPESAFE_TIMEOUT",
+    ))
+
     # App
     app_name: str = env_field("Aezab", "APP_NAME")
     debug: bool = env_field(False, "DEBUG")
@@ -51,6 +61,16 @@ class Settings(BaseSettings):
     llm_timeout: int = env_field(60, "LLM_TIMEOUT")  # Per-request LLM call timeout in seconds
     pipeline_timeout_seconds: int = env_field(90, "PIPELINE_TIMEOUT_SECONDS")  # Global invoke pipeline timeout
     idempotency_ttl_s: float = env_field(300, "IDEMPOTENCY_TTL_S")  # Client Idempotency-Key cache TTL (seconds)
+    # Per-process bounds: queued same-session calls also occupy an invoke slot.
+    max_concurrent_invokes: int = Field(16, ge=1, validation_alias=AliasChoices(
+        "AEZAB_MAX_CONCURRENT_INVOKES", "HLAB_MAX_CONCURRENT_INVOKES",
+    ))
+    session_wait_timeout_seconds: float = Field(10.0, gt=0, validation_alias=AliasChoices(
+        "AEZAB_SESSION_WAIT_TIMEOUT_SECONDS", "HLAB_SESSION_WAIT_TIMEOUT_SECONDS",
+    ))
+    sse_queue_maxsize: int = Field(128, ge=1, validation_alias=AliasChoices(
+        "AEZAB_SSE_QUEUE_MAXSIZE", "HLAB_SSE_QUEUE_MAXSIZE",
+    ))
 
     # Embedding
     embedding_provider: Literal["local", "dashscope", "openai_compatible"] = env_field(

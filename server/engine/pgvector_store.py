@@ -141,8 +141,12 @@ class PgVectorStore(VectorStoreAdapter):
         top_k: int = 5,
         domain: str | None = None,
         ef_search: int = 128,
+        allowed_chunk_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         from sqlalchemy import text
+
+        if allowed_chunk_ids == set():
+            return []
 
         vec = self._embedding.encode([query], mode="query")[0]
         vec_list = vec.astype(float).tolist()
@@ -151,29 +155,24 @@ class PgVectorStore(VectorStoreAdapter):
             # Set ef_search for this transaction
             conn.execute(text(f"SET hnsw.ef_search = {int(ef_search)}"))
 
+            conditions = []
+            params = {"vec": str(vec_list), "top_k": top_k}
             if domain:
-                result = conn.execute(
-                    text(
-                        f"SELECT chunk_id, domain, "
-                        f"       1 - (embedding <=> :vec::vector) AS score "
-                        f"FROM {self._table_name} "
-                        f"WHERE domain = :domain "
-                        f"ORDER BY embedding <=> :vec::vector "
-                        f"LIMIT :top_k"
-                    ),
-                    {"vec": str(vec_list), "domain": domain, "top_k": top_k},
-                )
-            else:
-                result = conn.execute(
-                    text(
-                        f"SELECT chunk_id, domain, "
-                        f"       1 - (embedding <=> :vec::vector) AS score "
-                        f"FROM {self._table_name} "
-                        f"ORDER BY embedding <=> :vec::vector "
-                        f"LIMIT :top_k"
-                    ),
-                    {"vec": str(vec_list), "top_k": top_k},
-                )
+                conditions.append("domain = :domain")
+                params["domain"] = domain
+            if allowed_chunk_ids is not None:
+                conditions.append("chunk_id = ANY(:allowed_ids)")
+                params["allowed_ids"] = list(allowed_chunk_ids)
+            where = "WHERE " + " AND ".join(conditions) if conditions else ""
+            result = conn.execute(
+                text(
+                    f"SELECT chunk_id, domain, "
+                    f"       1 - (embedding <=> CAST(:vec AS vector)) AS score "
+                    f"FROM {self._table_name} {where} "
+                    f"ORDER BY embedding <=> CAST(:vec AS vector) LIMIT :top_k"
+                ),
+                params,
+            )
 
             return [
                 {"chunk_id": row[0], "domain": row[1], "score": float(row[2])}

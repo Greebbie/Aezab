@@ -15,7 +15,7 @@ SYSTEM_PROMPT = """你是一名专业、周到的中文预约客服助手，负�
 2. 收集信息时逐项确认，语气礼貌耐心；
 3. 在用户确认提交前，完整复述已收集的信息，请用户核实无误后再提交；
 4. 对于营业时间、可预约范围、取消/改期政策等常见问题，优先使用知识库检索结果回答，不要编造信息；
-5. 预约提交后，明确告知用户后续联系方式和注意事项；
+5. 初始流程只记录预约意向。只有业务接口返回成功回执后，才能说明预约已提交；不得编造预约结果、联系方式或处理时间；
 6. 如用户情绪激动或问题超出处理范围，主动建议转接人工客服。"""
 
 _COLLECT_FIELDS = [
@@ -64,7 +64,7 @@ _WORKFLOW_STEPS = [
         "name": "confirm_info",
         "order": 1,
         "step_type": "confirm",
-        "prompt_template": '请核对以上预约信息是否正确？回复"确认"提交预约，或回复"取消"重新填写。',
+        "prompt_template": '请核对以上预约信息。回复"确认"保存预约意向，或回复"取消"重新填写。',
         "requires_human_confirm": True,
         "on_failure": "retry",
         "risk_level": "info",
@@ -73,7 +73,7 @@ _WORKFLOW_STEPS = [
         "name": "submit_booking",
         "order": 2,
         "step_type": "complete",
-        "prompt_template": "您的预约申请已提交成功！我们会尽快与您联系确认具体时间。",
+        "prompt_template": "已记录您的预约意向。预约是否成功及具体时间，请与服务方确认。",
         # webhook is disabled by default — the customer wires their own
         # booking-system endpoint after instantiation (Workflows page),
         # then flips webhook_enabled to true. See WorkflowExecutor._handle_complete.
@@ -90,7 +90,7 @@ _WORKFLOW_STEPS = [
 TEMPLATE: dict = {
     "id": "booking",
     "name": "预约办理客服",
-    "description": "预约/办理类智能客服：收集预约信息、确认后提交（可对接企业预约系统），同时支持常见问题知识问答。",
+    "description": "收集预约信息，由用户确认后保存到会话记录。可配置预约接口，并绑定知识源回答常见问题。",
     "category": "customer_service",
     "system_prompt": SYSTEM_PROMPT,
     "response_config": {
@@ -122,7 +122,7 @@ TEMPLATE: dict = {
     },
     "workflow": {
         "name": "预约办理流程",
-        "description": "收集预约信息 -> 确认 -> 提交（可选对接外部预约系统）-> 完成。",
+        "description": "收集预约信息 -> 用户确认 -> 记录意向。接入预约系统后，按实际回执配置完成提示。",
         "steps": _WORKFLOW_STEPS,
     },
 }

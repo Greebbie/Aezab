@@ -1,4 +1,4 @@
-# HlAB 集成指南
+# Aezab 集成指南
 
 > 面向外部系统 / 客户端应用的 Headless API 集成文档。覆盖：API Key 获取、Python/JS
 > 官方 SDK（同步调用 + SSE 流式）、SSE 事件参考、会话（Sessions）与文件（Files）
@@ -11,7 +11,7 @@
 
 ## 集成面概览
 
-Integrations 面向开发者联调，不是第二套 Agent 配置系统。
+Integrations 提供 API 接入配置与联调工具。
 
 | 分类 | 用途 |
 | --- | --- |
@@ -32,14 +32,14 @@ Customer App
   -> Customer API or final response
 ```
 
-所有 API 都需要 `X-API-Key` 请求头，Key 从控制台 **Integrations** 页面创建（勾选 `invoke`
-作用域即可）。
+调用 Agent 时使用 `X-API-Key` 请求头，Key 从控制台 **Integrations** 页面创建，选择
+`invoke` 作用域。账号与 API Key 管理接口使用控制台登录 JWT。
 
 ---
 
 ## 1. 获取 API Key
 
-所有 Headless API 调用都通过 `X-API-Key` 请求头认证。API Key 携带 **scopes**（作用域），
+Headless 业务接口支持 `X-API-Key` 请求头认证。API Key 携带 **scopes**（作用域），
 调用 `/invoke` 系列接口需要 `invoke` 作用域；调用管理类接口（agents/workflows/knowledge/
 tools/subscriptions 等）需要 `manage` 作用域。空 scopes 列表表示不限制（向后兼容旧 Key）。
 

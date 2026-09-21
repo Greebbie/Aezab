@@ -20,7 +20,7 @@ SYSTEM_PROMPT = """你是一名专业、耐心的中文智能客服助手，负�
 TEMPLATE: dict = {
     "id": "kb_support",
     "name": "知识问答客服",
-    "description": "基于知识库的智能问答客服，适合被频繁咨询产品/服务信息的场景。上传文档后即可直接使用，无需手动配置技能。",
+    "description": "基于产品文档与服务政策回答问题。上传文档后，在 Agent 的能力配置中选择对应知识源。",
     "category": "customer_service",
     "system_prompt": SYSTEM_PROMPT,
     "response_config": {

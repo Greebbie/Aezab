@@ -8,6 +8,7 @@ import {
   PlayCircleOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import type { LLMConfig, KnowledgeSource, Workflow, Tool } from '../../types';
 import { agentApi, agentCapabilitiesApi, llmConfigApi, knowledgeApi, workflowApi, toolApi } from '../../api';
 
@@ -22,6 +23,7 @@ interface AgentWizardProps {
 
 export default function AgentWizard({ open, onClose, onCreated, onSwitchToTemplate }: AgentWizardProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [current, setCurrent] = useState(0);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
@@ -48,41 +50,35 @@ export default function AgentWizard({ open, onClose, onCreated, onSwitchToTempla
   }, [open, form]);
 
   const handleNext = async () => {
+    if (current === 0 && !form.getFieldValue('name')?.trim()) {
+      form.setFields([{ name: 'name', errors: ['Please enter a name'] }]);
+      return;
+    }
     setLoading(true);
     try {
-      if (current === 0) {
-        await form.validateFields(['name', 'description', 'system_prompt']);
-      }
-      if (current === 1) {
-        await form.validateFields(['llm_config_id']);
-      }
 
-      // Create agent at step 0 (after basic info validated)
-      if (current === 0 && !createdAgentId) {
-        const values = form.getFieldsValue();
-        const resp = await agentApi.create({
-          name: values.name,
+      // Save only after the user has selected the model and capabilities.
+      if (current === 3) {
+        const values = form.getFieldsValue(true);
+        const agentData = {
+          name: values.name.trim(),
           description: values.description || '',
           system_prompt: values.system_prompt || '',
-        });
-        setCreatedAgentId(resp.data.id);
-      }
-
-      // Save LLM config at step 1->2 transition
-      if (current === 1 && createdAgentId) {
-        const llmConfigId = form.getFieldValue('llm_config_id');
-        if (llmConfigId) {
-          await agentApi.update(createdAgentId, { llm_config_id: llmConfigId });
+          llm_config_id: values.llm_config_id || null,
+        };
+        let agentId = createdAgentId;
+        if (agentId) {
+          await agentApi.update(agentId, agentData);
+        } else {
+          const resp = await agentApi.create(agentData);
+          agentId = resp.data.id;
+          setCreatedAgentId(agentId);
         }
-      }
-
-      // Save capabilities at step 3 (tools & workflows)
-      if (current === 3 && createdAgentId) {
         const selectedKnowledge: string[] = form.getFieldValue('knowledge_source_ids') || [];
         const selectedWorkflows: string[] = form.getFieldValue('workflow_ids') || [];
         const selectedTools: string[] = form.getFieldValue('tool_ids') || [];
 
-        await agentCapabilitiesApi.update(createdAgentId, {
+        await agentCapabilitiesApi.update(agentId, {
           knowledge: selectedKnowledge.map((id) => ({
             source_ids: [id],
             domain: 'default',
@@ -114,6 +110,7 @@ export default function AgentWizard({ open, onClose, onCreated, onSwitchToTempla
     message.success('Agent created and configured successfully!');
     onCreated();
     onClose();
+    if (createdAgentId) navigate(`/playground?agent=${encodeURIComponent(createdAgentId)}`);
   };
 
   const steps = [
@@ -252,13 +249,13 @@ export default function AgentWizard({ open, onClose, onCreated, onSwitchToTempla
       </Spin>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
-        <Button disabled={current === 0} onClick={() => setCurrent(current - 1)}>
+        <Button disabled={current === 0 || loading} onClick={() => setCurrent(current - 1)}>
           Previous
         </Button>
         <Space>
           {current < steps.length - 1 ? (
             <Button type="primary" onClick={handleNext} loading={loading}>
-              {current === 0 ? 'Create & Next' : 'Next'}
+              {current === 3 ? 'Create Agent' : 'Next'}
             </Button>
           ) : (
             <Button type="primary" onClick={handleFinish}>

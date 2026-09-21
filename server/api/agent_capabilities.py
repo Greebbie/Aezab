@@ -60,6 +60,16 @@ def _managed_tag(agent_id: str) -> str:
     return f"agent:{agent_id}"
 
 
+async def _owned_resources(db: AsyncSession, model, ids: set[str], tenant_id: str) -> dict:
+    if not ids:
+        return {}
+    result = await db.execute(select(model).where(model.id.in_(ids), model.tenant_id == tenant_id))
+    resources = {resource.id: resource for resource in result.scalars().all()}
+    if resources.keys() != ids:
+        raise HTTPException(404, "Capability resource not found")
+    return resources
+
+
 def _optional_trigger_config(keywords: list[str], description: str) -> dict[str, Any] | None:
     """Store only Agent-specific hints in trigger_config."""
     trigger_config: dict[str, Any] = {}
@@ -138,7 +148,7 @@ async def get_capabilities(
 
     # Load managed skills
     tag = _managed_tag(agent_id)
-    result = await db.execute(select(Skill).where(Skill.managed_by == tag))
+    result = await db.execute(select(Skill).where(Skill.managed_by == tag, Skill.tenant_id == tenant_id))
     skills = result.scalars().all()
 
     caps: dict[str, list] = {"knowledge": [], "workflows": [], "tools": []}
@@ -168,10 +178,22 @@ async def update_capabilities(
     if not agent:
         raise HTTPException(404, "Agent not found")
 
+    # Validate the whole replacement before writing or reading display names.
+    # Knowing another tenant's resource ID must not reveal its name or bind it.
+    sources = await _owned_resources(
+        db, KnowledgeSource, {sid for cap in body.knowledge for sid in cap.source_ids}, tenant_id,
+    )
+    workflows = await _owned_resources(
+        db, Workflow, {cap.workflow_id for cap in body.workflows}, tenant_id,
+    )
+    tools = await _owned_resources(
+        db, ToolDefinition, {tid for cap in body.tools for tid in cap.tool_ids}, tenant_id,
+    )
+
     tag = _managed_tag(agent_id)
 
     # Load existing managed skills
-    result = await db.execute(select(Skill).where(Skill.managed_by == tag))
+    result = await db.execute(select(Skill).where(Skill.managed_by == tag, Skill.tenant_id == tenant_id))
     existing_skills = list(result.scalars().all())
 
     # Index existing skills by (skill_type, unique_key) for reconciliation
@@ -199,12 +221,7 @@ async def update_capabilities(
             "domain": cap.domain,
         }
         trigger_config = _optional_trigger_config(cap.keywords, cap.description)
-        source_names: list[str] = []
-        if cap.source_ids:
-            sources_result = await db.execute(
-                select(KnowledgeSource).where(KnowledgeSource.id.in_(cap.source_ids))
-            )
-            source_names = [source.name for source in sources_result.scalars().all()]
+        source_names = [sources[source_id].name for source_id in cap.source_ids]
         skill_desc = _knowledge_skill_description(cap.domain, source_names)
 
         if key in existing_map:
@@ -233,7 +250,7 @@ async def update_capabilities(
         key = ("workflow", cap.workflow_id)
         execution_config = {"workflow_id": cap.workflow_id}
         trigger_config = _optional_trigger_config(cap.keywords, cap.description)
-        workflow = await db.get(Workflow, cap.workflow_id)
+        workflow = workflows[cap.workflow_id]
         skill_desc = _workflow_skill_description(workflow, cap.workflow_id)
 
         if key in existing_map:
@@ -266,12 +283,7 @@ async def update_capabilities(
             "max_tool_rounds": 5,
         }
         trigger_config_t = _optional_trigger_config(cap.keywords, cap.description)
-        tools_for_description: list[ToolDefinition] = []
-        if cap.tool_ids:
-            tools_result = await db.execute(
-                select(ToolDefinition).where(ToolDefinition.id.in_(cap.tool_ids))
-            )
-            tools_for_description = list(tools_result.scalars().all())
+        tools_for_description = [tools[tool_id] for tool_id in cap.tool_ids]
         skill_desc = _tool_skill_description(tools_for_description, cap.tool_ids)
 
         if key in existing_map:
@@ -307,7 +319,7 @@ async def update_capabilities(
     await db.commit()
 
     # Return updated capabilities
-    result = await db.execute(select(Skill).where(Skill.managed_by == tag))
+    result = await db.execute(select(Skill).where(Skill.managed_by == tag, Skill.tenant_id == tenant_id))
     updated_skills = result.scalars().all()
 
     caps: dict[str, list] = {"knowledge": [], "workflows": [], "tools": []}

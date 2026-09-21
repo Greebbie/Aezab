@@ -241,7 +241,10 @@ async def add_faq(
 # ── Retrieval test ───────────────────────────────────────────────
 
 @router.post("/search", response_model=RetrievalResponse)
-async def search(body: RetrievalRequest, db: AsyncSession = Depends(get_db)):
+async def search(
+    body: RetrievalRequest, db: AsyncSession = Depends(get_db),
+    tenant_id: str = Depends(get_tenant_id),
+):
     """Test knowledge retrieval — used from the console for debugging."""
     from server.runtime_config import runtime_config
     vector_store = None
@@ -254,6 +257,7 @@ async def search(body: RetrievalRequest, db: AsyncSession = Depends(get_db)):
     retriever = KnowledgeRetriever(
         db, vector_store=vector_store,
         runtime_cfg=runtime_config.all(),
+        tenant_id=tenant_id,
     )
     return await retriever.retrieve(
         query=body.query,

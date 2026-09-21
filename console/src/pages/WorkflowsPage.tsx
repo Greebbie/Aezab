@@ -1,9 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Space, message, Tag, List, Popconfirm, Divider, Card } from 'antd';
+import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Space, message, Tag, List, Popconfirm, Divider, Card, Alert, Empty } from 'antd';
 import { PlusOutlined, DeleteOutlined, EditOutlined, MinusCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { workflowApi, toolApi, type ResourceUsage } from '../api';
 import { friendlyError } from '../utils/friendlyError';
+import type { Connection } from 'reactflow';
+import type { Workflow, WorkflowStep } from '../types';
+import WorkflowCanvas from '../components/workflow/WorkflowCanvas';
+import RouteEditor from '../components/workflow/RouteEditor';
+import DecisionEditor from '../components/workflow/DecisionEditor';
+import { editableRules, resolveStep, type WorkflowRoute } from '../components/workflow/graph';
 
 const { TextArea } = Input;
 
@@ -24,6 +30,7 @@ export default function WorkflowsPage() {
     { value: 'collect', label: t('workflows.stepTypes.collect') },
     { value: 'validate', label: t('workflows.stepTypes.validate') },
     { value: 'tool_call', label: t('workflows.stepTypes.tool_call') },
+    { value: 'decision', label: t('workflows.stepTypes.decision') },
     { value: 'confirm', label: t('workflows.stepTypes.confirm') },
     { value: 'human_review', label: t('workflows.stepTypes.human_review') },
     { value: 'complete', label: t('workflows.stepTypes.complete') },
@@ -42,6 +49,9 @@ export default function WorkflowsPage() {
   const [stepModalOpen, setStepModalOpen] = useState(false);
   const [selectedWf, setSelectedWf] = useState<any>(null);
   const [editingStep, setEditingStep] = useState<any>(null);
+  const [graphWorkflowId, setGraphWorkflowId] = useState<string | null>(null);
+  const [connectionDraft, setConnectionDraft] = useState(false);
+  const [savingStep, setSavingStep] = useState(false);
   const [form] = Form.useForm();
   const [stepForm] = Form.useForm();
   const stepType = Form.useWatch('step_type', stepForm);
@@ -54,6 +64,7 @@ export default function WorkflowsPage() {
         toolApi.list(),
       ]);
       setWorkflows(wfRes.data);
+      setGraphWorkflowId((current) => wfRes.data.some((wf) => wf.id === current) ? current : wfRes.data[0]?.id || null);
       setTools(toolRes.data);
     } catch (e: any) {
       message.error(t('workflows.loadFailed'));
@@ -132,15 +143,19 @@ export default function WorkflowsPage() {
   };
 
   const openEditStep = (wf: any, step: any) => {
+    setConnectionDraft(false);
     setSelectedWf(wf);
     setEditingStep(step);
     const formValues: any = {
       ...step,
+      branch_rules: editableRules(wf.steps, step.next_step_rules),
+      fallback_step_id: resolveStep(wf.steps, step.fallback_step_id)?.id || step.fallback_step_id,
       fields: (step.fields || []).map((f: any) => ({
         ...f,
         options: f.options ? JSON.stringify(f.options, null, 2) : '',
       })),
     };
+    stepForm.resetFields();
     // Webhook headers: object -> JSON string for TextArea editing
     if (step.tool_config?.webhook_headers && typeof step.tool_config.webhook_headers === 'object') {
       formValues.tool_config = {
@@ -152,10 +167,48 @@ export default function WorkflowsPage() {
     setStepModalOpen(true);
   };
 
+  const openNewStep = (wf: Workflow) => {
+    setSelectedWf(wf);
+    setEditingStep(null);
+    setConnectionDraft(false);
+    stepForm.resetFields();
+    stepForm.setFieldsValue({ order: Math.max(-1, ...wf.steps.map((step) => step.order)) + 1, branch_rules: [] });
+    setStepModalOpen(true);
+  };
+
+  const connectSteps = (wf: Workflow, connection: Connection) => {
+    const source = wf.steps.find((step) => step.id === connection.source);
+    if (!source || !connection.target || source.id === connection.target || source.step_type === 'complete') return;
+    openEditStep(wf, source);
+    if (connection.sourceHandle === 'failure') {
+      stepForm.setFieldValue('fallback_step_id', connection.target);
+    } else {
+      const rules = editableRules(wf.steps, source.next_step_rules);
+      // A new connection starts a draft; existing routes are retained until Save.
+      const hasDefault = rules.some((rule) => !rule.condition);
+      rules.splice(hasDefault ? rules.length - 1 : rules.length, 0, {
+        condition: hasDefault ? { field: '', op: 'eq', value: '' } : null,
+        goto_step: connection.target,
+      });
+      stepForm.setFieldValue('branch_rules', rules);
+    }
+    setConnectionDraft(true);
+  };
+
+  const selectRoute = (wf: Workflow, route: WorkflowRoute) => {
+    const step = wf.steps.find((item) => item.id === route.source);
+    if (step) openEditStep(wf, step);
+  };
+
   const handleSaveStep = async () => {
     if (!selectedWf) return;
     try {
-      const values = await stepForm.validateFields();
+      const formValues = await stepForm.validateFields();
+      setSavingStep(true);
+      // PUT replaces the full step: keep configured values outside this editor.
+      const values = { ...editingStep, ...formValues };
+      values.next_step_rules = { rules: formValues.branch_rules || [] };
+      delete values.branch_rules;
       const st = values.step_type;
 
       // collect: process fields — options JSON string -> array
@@ -163,7 +216,7 @@ export default function WorkflowsPage() {
         values.fields = values.fields.map((f: any) => {
           const field = { ...f };
           if (f.field_type === 'select' && f.options) {
-            try { field.options = JSON.parse(f.options); } catch { delete field.options; }
+            try { field.options = typeof f.options === 'string' ? JSON.parse(f.options) : f.options; } catch { throw new Error(t('workflows.graph.invalidOptions')); }
           } else {
             delete field.options;
           }
@@ -175,7 +228,9 @@ export default function WorkflowsPage() {
 
       // Clean type-specific fields
       if (st !== 'tool_call') values.tool_id = null;
-      if (st !== 'confirm') values.requires_human_confirm = false;
+      if (!['confirm', 'tool_call'].includes(st)) values.requires_human_confirm = false;
+      if (!['decision', 'tool_call', 'validate'].includes(st)) values.fallback_step_id = null;
+      if (st === 'complete') values.next_step_rules = null;
 
       // complete: webhook — default method + headers JSON string -> object
       if (st === 'complete' && values.tool_config?.webhook_enabled) {
@@ -184,10 +239,10 @@ export default function WorkflowsPage() {
           try {
             values.tool_config.webhook_headers = JSON.parse(values.tool_config.webhook_headers);
           } catch {
-            delete values.tool_config.webhook_headers;
+            throw new Error(t('workflows.graph.invalidHeaders'));
           }
         }
-      } else if (st !== 'tool_call') {
+      } else if (!['tool_call', 'decision'].includes(st)) {
         values.tool_config = null;
       }
 
@@ -205,6 +260,8 @@ export default function WorkflowsPage() {
     } catch (e: any) {
       if (e.errorFields) return;
       message.error(`${t('workflows.saveFailed')}: ` + (e.response?.data?.detail || e.message || t('common.unknown')));
+    } finally {
+      setSavingStep(false);
     }
   };
 
@@ -219,14 +276,15 @@ export default function WorkflowsPage() {
   };
 
   const columns = [
-    { title: t('common.name'), dataIndex: 'name', key: 'name' },
+    { title: t('common.name'), dataIndex: 'name', key: 'name', width: 180 },
     { title: t('common.description'), dataIndex: 'description', key: 'description', ellipsis: true },
-    { title: t('workflows.steps'), key: 'steps', render: (_: any, r: any) => r.steps?.length || 0 },
-    { title: t('common.version'), dataIndex: 'version', key: 'version' },
+    { title: t('workflows.steps'), key: 'steps', width: 75, render: (_: any, r: any) => r.steps?.length || 0 },
+    { title: t('common.version'), dataIndex: 'version', key: 'version', width: 80 },
     {
-      title: t('common.actions'), key: 'actions', render: (_: any, record: any) => (
-        <Space>
-          <Button icon={<PlusOutlined />} size="small" onClick={() => { setSelectedWf(record); setEditingStep(null); stepForm.resetFields(); setStepModalOpen(true); }}>
+      title: t('common.actions'), key: 'actions', width: 260, render: (_: any, record: any) => (
+        <Space wrap>
+          <Button size="small" onClick={() => setGraphWorkflowId(record.id)}>{t('workflows.graph.open')}</Button>
+          <Button icon={<PlusOutlined />} size="small" onClick={() => openNewStep(record)}>
             {t('workflows.addStep')}
           </Button>
           <Button icon={<DeleteOutlined />} size="small" danger onClick={() => handleDeleteWfClick(record.id)}>{t('common.delete')}</Button>
@@ -249,8 +307,19 @@ export default function WorkflowsPage() {
         columns={columns}
         rowKey="id"
         loading={loading}
+        scroll={{ x: 760 }}
         expandable={{
+          expandedRowKeys: graphWorkflowId ? [graphWorkflowId] : [],
+          onExpand: (expanded, record) => setGraphWorkflowId(expanded ? record.id : null),
           expandedRowRender: (record) => (
+            <>
+            <Alert message={t('workflows.graph.help')} type="info" showIcon style={{ marginBottom: 12, maxWidth: 'calc(100vw - 280px)' }} />
+            {record.steps?.length ? <WorkflowCanvas
+              steps={record.steps} selectedStepId={stepModalOpen ? editingStep?.id || null : null}
+              onSelectStep={(step) => { if (step) openEditStep(record, step); }}
+              onConnect={(connection) => connectSteps(record, connection)}
+              onSelectRoute={(route) => selectRoute(record, route)}
+            /> : <Empty description={t('workflows.graph.empty')}><Button type="primary" onClick={() => openNewStep(record)}>{t('workflows.addStep')}</Button></Empty>}
             <List
               size="small"
               header={<strong>{t('workflows.steps')}</strong>}
@@ -291,6 +360,7 @@ export default function WorkflowsPage() {
                 </List.Item>
               )}
             />
+            </>
           ),
         }}
       />
@@ -314,8 +384,10 @@ export default function WorkflowsPage() {
           : t('workflows.addStepModalTitle', { name: selectedWf?.name || '' })}
         open={stepModalOpen}
         onOk={handleSaveStep}
+        confirmLoading={savingStep}
         onCancel={() => { setStepModalOpen(false); setEditingStep(null); }}
-        width={720}
+        width={840}
+        styles={{ body: { maxHeight: '65vh', overflowY: 'auto', paddingRight: 12 } }}
         destroyOnClose
       >
         <Form
@@ -329,6 +401,7 @@ export default function WorkflowsPage() {
             requires_human_confirm: false,
           }}
         >
+          {connectionDraft && <Alert type="warning" showIcon message={t('workflows.graph.draftConnection')} style={{ marginBottom: 16 }} />}
           {/* ── Common fields ── */}
           <Form.Item name="name" label={t('workflows.stepName')} rules={[{ required: true }]}>
             <Input placeholder={t('workflows.stepNamePlaceholder')} />
@@ -337,8 +410,32 @@ export default function WorkflowsPage() {
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="step_type" label={t('workflows.stepType')}>
-            <Select options={STEP_TYPES} />
+            <Select options={STEP_TYPES} onChange={(value) => {
+              if (value === 'decision') stepForm.setFieldsValue({ tool_config: {
+                provider: 'typesafe', instructions: '', input_fields: [], result_key: 'route',
+                choices: [{ value: 'other', description: t('workflows.decision.otherDescription') }],
+                min_confidence: 0.8, min_probability: 0.8,
+              } });
+              else if (stepType === 'decision') stepForm.setFieldValue('tool_config', null);
+            }} />
           </Form.Item>
+
+          {stepType === 'human_review' && <Alert type="warning" showIcon message={t('workflows.graph.manualPauseHelp')} style={{ marginBottom: 16 }} />}
+          {stepType === 'decision' && <DecisionEditor steps={selectedWf?.steps || []} />}
+          {['decision', 'tool_call', 'validate'].includes(stepType) && <Form.Item
+            name="fallback_step_id" label={t('workflows.graph.failure')}
+            rules={[{ required: stepType === 'decision' }]} extra={t('workflows.graph.failureHelp')}
+          ><Select allowClear options={(selectedWf?.steps || []).filter((step: WorkflowStep) => step.id !== editingStep?.id && (
+            stepType !== 'decision' || step.step_type === 'human_review'
+            || (step.step_type === 'collect' && (step.fields || []).length > 0)
+            || (step.step_type === 'complete' && !step.tool_config?.webhook_enabled)
+          )).map((step: WorkflowStep) => ({ value: step.id, label: `${step.order} · ${step.name}` }))} /></Form.Item>}
+
+          {stepType !== 'complete' && <>
+            <Divider orientation="left">{t('workflows.branchingRules')}</Divider>
+            <RouteEditor form={stepForm} steps={selectedWf?.steps || []} stepId={editingStep?.id} />
+            <Divider />
+          </>}
           <Form.Item name="prompt_template" label={t('workflows.promptTemplate')}>
             <TextArea rows={3} placeholder={t('workflows.promptTemplatePlaceholder')} />
           </Form.Item>
@@ -443,6 +540,9 @@ export default function WorkflowsPage() {
               <Divider orientation="left">{t('workflows.toolBinding')}</Divider>
               <Form.Item name="tool_id" label={t('workflows.selectToolLabel')} rules={[{ required: true, message: t('workflows.toolRequiredMsg') }]}>
                 <Select allowClear placeholder={t('workflows.selectToolPlaceholder')} options={toolOptions} />
+              </Form.Item>
+              <Form.Item name="requires_human_confirm" label={t('workflows.graph.requesterConfirm')} valuePropName="checked" extra={t('workflows.graph.requesterConfirmHelp')}>
+                <Switch />
               </Form.Item>
               <Form.Item shouldUpdate noStyle>
                 {({ getFieldValue }) => {

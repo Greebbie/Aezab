@@ -23,10 +23,9 @@ Three cases, distinguished by inspecting the live database at startup:
      `ALTER TABLE agents ADD COLUMN llm_config_id ...` patch, swallowing
      the already-exists failure exactly like the old code did (covers DBs
      whose agents table predates that column). Only then does
-     `alembic stamp head` mark it current -- stamping without healing
-     would freeze any missing-table/column gap forever, because Alembic
-     would consider the schema up to date and never revisit it.
-     Migrations apply normally from this point forward.
+     `alembic stamp 0001` records the healed baseline, followed by
+     `alembic upgrade head`. Stamping a newer head directly would silently
+     skip later column changes. Newer migrations must always run.
   3. `alembic_version` present: a real `alembic upgrade head`, applying any
      migrations newer than what's already recorded.
 
@@ -70,6 +69,11 @@ import server.models  # noqa: F401 - registers every model on Base.metadata;
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_BASELINE_TABLES = {
+    "agents", "workflows", "workflow_steps", "workflow_versions", "knowledge_sources", "knowledge_chunks",
+    "tool_definitions", "audit_traces", "conversation_sessions", "messages", "llm_configs", "skills",
+    "agent_skills", "agent_connections", "users", "api_keys", "event_subscriptions",
+}
 
 
 def _alembic_config() -> Config:
@@ -115,14 +119,16 @@ async def ensure_schema() -> None:
         logger.info(
             "ensure_schema: existing pre-Alembic database -> heal to the "
             "Wave 5 baseline (create_all + legacy llm_config_id patch), "
-            "then stamp head"
+            "then stamp 0001 and upgrade head"
         )
         # Heal step 1: create any tables this DB is missing (a deployment
         # that last booted on an older build may lack newer tables, e.g.
         # pre-Wave-3 DBs have no `event_subscriptions`). create_all is
         # idempotent -- it never touches tables that already exist.
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(lambda connection: Base.metadata.create_all(
+                connection, tables=[table for table in Base.metadata.sorted_tables if table.name in _BASELINE_TABLES],
+            ))
         # Heal step 2: the legacy Wave 2 column patch the old lifespan
         # applied on every boot. Covers DBs whose agents table predates
         # llm_config_id; the failure on an already-present column is
@@ -139,7 +145,8 @@ async def ensure_schema() -> None:
                 logger.info("ensure_schema: added llm_config_id column to agents table")
             except Exception:
                 await conn.rollback()  # Column already exists -- expected on most databases
-        await asyncio.to_thread(command.stamp, cfg, "head")
+        await asyncio.to_thread(command.stamp, cfg, "0001")
+        await asyncio.to_thread(command.upgrade, cfg, "head")
 
     else:
         logger.info("ensure_schema: alembic_version present -> upgrade head")
@@ -160,7 +167,7 @@ async def _migrate_plaintext_llm_keys() -> None:
     database. Failures are logged, not raised -- a broken key migration must
     never block application startup; the affected rows simply stay
     plaintext until the next successful boot."""
-    from server.engine.secrets_store import migrate_plaintext_llm_keys
+    from server.engine.secrets_store import migrate_plaintext_llm_keys, migrate_plaintext_tool_tokens
 
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     try:
@@ -168,5 +175,8 @@ async def _migrate_plaintext_llm_keys() -> None:
             migrated = await migrate_plaintext_llm_keys(session)
             if migrated:
                 logger.info("ensure_schema: encrypted %d plaintext llm_configs.api_key row(s)", migrated)
+            tool_count = await migrate_plaintext_tool_tokens(session)
+            if tool_count:
+                logger.info("ensure_schema: encrypted %d plaintext tool credential row(s)", tool_count)
     except Exception as exc:  # noqa: BLE001 - never block startup on this heal step
         logger.error("ensure_schema: llm_configs.api_key encryption heal failed: %s", exc)

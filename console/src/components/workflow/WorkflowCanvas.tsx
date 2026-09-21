@@ -1,124 +1,119 @@
-import React, { useCallback, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import ReactFlow, {
-  Background,
-  Controls,
-  MiniMap,
-  Node,
-  Edge,
-  useNodesState,
-  useEdgesState,
-  MarkerType,
-  NodeMouseHandler,
+  Background, Controls, MiniMap, MarkerType, useNodesState, BaseEdge, EdgeLabelRenderer, getSmoothStepPath,
+  type Connection, type Edge, type Node, type EdgeProps, type ReactFlowInstance,
 } from 'reactflow';
+import { useTranslation } from 'react-i18next';
 import 'reactflow/dist/style.css';
-import type { WorkflowStep, NextStepRule } from '../../types';
+import type { WorkflowStep } from '../../types';
 import WorkflowNode from './WorkflowNode';
+import { workflowRoutes, type WorkflowRoute } from './graph';
 
 interface WorkflowCanvasProps {
   steps: WorkflowStep[];
   onSelectStep: (step: WorkflowStep | null) => void;
   selectedStepId: string | null;
+  onConnect: (connection: Connection) => void;
+  onSelectRoute: (route: WorkflowRoute) => void;
 }
 
 const nodeTypes = { workflowStep: WorkflowNode };
 
-function stepsToNodes(steps: WorkflowStep[]): Node[] {
-  return steps.map((step, idx) => ({
-    id: step.id,
-    type: 'workflowStep',
-    position: { x: 250, y: idx * 160 },
-    data: {
-      step,
-      index: idx,
-      total: steps.length,
-    },
-    selected: false,
-  }));
+function RouteEdge(props: EdgeProps) {
+  const [path, x, y] = getSmoothStepPath(props);
+  return <>
+    <BaseEdge path={path} markerEnd={props.markerEnd} style={props.style} />
+    <EdgeLabelRenderer>
+      <button className="nodrag nopan" onClick={(event) => { event.stopPropagation(); props.data.onSelect(); }} style={{
+        position: 'absolute', transform: `translate(-50%, -50%) translate(${x}px, ${y + props.data.labelOffset}px)`,
+        pointerEvents: 'all', color: props.data.color, background: '#fff', border: '1px solid #edf0f4',
+        borderRadius: 3, fontSize: 12, padding: '2px 5px', cursor: 'pointer',
+      }}>{props.label}</button>
+    </EdgeLabelRenderer>
+  </>;
 }
 
-function stepsToEdges(steps: WorkflowStep[]): Edge[] {
-  const edges: Edge[] = [];
+const edgeTypes = { route: RouteEdge };
 
-  steps.forEach((step, idx) => {
-    const rules = step.next_step_rules;
-    if (rules && Array.isArray(rules) && rules.length > 0) {
-      rules.forEach((rule: NextStepRule, rIdx: number) => {
-        const targetStep = steps.find(
-          (s) => s.name === rule.goto_step || String(s.order) === String(rule.goto_step)
-        );
-        if (targetStep) {
-          const label = rule.condition
-            ? `${rule.condition.field} ${rule.condition.op} ${rule.condition.value}`
-            : 'default';
-          edges.push({
-            id: `${step.id}-rule-${rIdx}`,
-            source: step.id,
-            target: targetStep.id,
-            label,
-            type: 'smoothstep',
-            animated: !rule.condition,
-            style: { stroke: rule.condition ? '#f59e0b' : '#666' },
-            markerEnd: { type: MarkerType.ArrowClosed },
-          });
+export default function WorkflowCanvas({ steps, onSelectStep, selectedStepId, onConnect, onSelectRoute }: WorkflowCanvasProps) {
+  const { t } = useTranslation();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const flowRef = useRef<ReactFlowInstance | null>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(() => { void flowRef.current?.fitView({ padding: 0.15 }); });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+  const ordered = useMemo(() => [...steps].sort((a, b) => a.order - b.order), [steps]);
+  const routes = useMemo(() => workflowRoutes(steps), [steps]);
+  const initialNodes = useMemo<Node[]>(() => {
+    const levels = new Map<string, number>();
+    const queue = ordered.length ? [ordered[0].id] : [];
+    if (queue.length) levels.set(queue[0], 0);
+    for (let index = 0; index < queue.length; index++) {
+      const source = queue[index];
+      routes.filter((route) => route.source === source).forEach((route) => {
+        if (!levels.has(route.target)) {
+          levels.set(route.target, levels.get(source)! + 1);
+          queue.push(route.target);
         }
       });
-    } else if (idx < steps.length - 1) {
-      edges.push({
-        id: `${step.id}-next`,
-        source: step.id,
-        target: steps[idx + 1].id,
-        type: 'smoothstep',
-        style: { stroke: '#666' },
-        markerEnd: { type: MarkerType.ArrowClosed },
-      });
     }
-  });
-
-  return edges;
-}
-
-export default function WorkflowCanvas({ steps, onSelectStep, selectedStepId }: WorkflowCanvasProps) {
-  const initialNodes = useMemo(() => stepsToNodes(steps), [steps]);
-  const initialEdges = useMemo(() => stepsToEdges(steps), [steps]);
+    const rows = new Map<number, WorkflowStep[]>();
+    ordered.forEach((step, index) => {
+      const level = levels.get(step.id) ?? index;
+      rows.set(level, [...(rows.get(level) || []), step]);
+    });
+    return ordered.map((step, index) => {
+      const level = levels.get(step.id) ?? index;
+      const row = rows.get(level)!;
+      return {
+        id: step.id, type: 'workflowStep',
+        position: { x: (row.indexOf(step) - (row.length - 1) / 2) * 340 + 360, y: level * 150 + 30 },
+        data: { step, index, total: steps.length }, selected: selectedStepId === step.id,
+      };
+    });
+  }, [ordered, routes, selectedStepId, steps.length]);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  useEffect(() => {
+    setNodes((current) => initialNodes.map((node) => ({
+      ...node, position: current.find((old) => old.id === node.id)?.position || node.position,
+    })));
+  }, [initialNodes, setNodes]);
 
-  React.useEffect(() => {
-    setNodes(stepsToNodes(steps));
-    setEdges(stepsToEdges(steps));
-  }, [steps, setNodes, setEdges]);
-
-  const onNodeClick: NodeMouseHandler = useCallback(
-    (_event, node) => {
-      const step = steps.find((s) => s.id === node.id);
-      onSelectStep(step ?? null);
-    },
-    [steps, onSelectStep]
-  );
-
-  const onPaneClick = useCallback(() => {
-    onSelectStep(null);
-  }, [onSelectStep]);
-
-  // Suppress unused variable warnings - these are required by useNodesState/useEdgesState
-  void selectedStepId;
+  const edges = useMemo<Edge[]>(() => routes.map((route) => {
+    const condition = route.rule?.condition;
+    const color = route.kind === 'failure' ? '#cf1322' : condition ? '#ad6800' : '#1677ff';
+    const label = condition
+      ? `${condition.field} ${condition.op} ${Array.isArray(condition.value) ? condition.value.join(', ') : String(condition.value)}`
+      : t(`workflows.graph.${route.kind}`);
+    const parallel = routes.filter((item) => item.source === route.source && item.target === route.target && (item.kind === 'failure') === (route.kind === 'failure'));
+    return {
+      id: route.id, source: route.source, target: route.target,
+      sourceHandle: route.kind === 'failure' ? 'failure' : 'success',
+      type: 'route', label,
+      data: { color, labelOffset: (parallel.indexOf(route) - (parallel.length - 1) / 2) * 28, onSelect: () => onSelectRoute(route) },
+      style: { stroke: color, strokeWidth: 2, strokeDasharray: route.kind === 'implicit' ? '5 4' : undefined },
+      labelStyle: { fill: color, fontSize: 12 }, labelBgPadding: [5, 4],
+      markerEnd: { type: MarkerType.ArrowClosed, color },
+    };
+  }), [routes, t, onSelectRoute]);
 
   return (
-    <div style={{ height: '100%', minHeight: 500 }}>
+    <div ref={containerRef} style={{ height: 580, minHeight: 400, maxWidth: 'calc(100vw - 280px)', background: '#fafcfe', border: '1px solid #d9e2ec', borderRadius: 8 }}>
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onNodeClick={onNodeClick}
-        onPaneClick={onPaneClick}
-        nodeTypes={nodeTypes}
-        fitView
-        attributionPosition="bottom-left"
+        nodes={nodes} edges={edges} onNodesChange={onNodesChange}
+        onInit={(instance) => { flowRef.current = instance; }}
+        onConnect={onConnect} onNodeClick={(_, node) => onSelectStep(steps.find((step) => step.id === node.id) || null)}
+        onEdgeClick={(_, edge) => { const route = routes.find((item) => item.id === edge.id); if (route) onSelectRoute(route); }}
+        onPaneClick={() => onSelectStep(null)} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+        deleteKeyCode={null} fitView minZoom={0.25} maxZoom={1.5}
       >
-        <Background />
-        <Controls />
-        <MiniMap />
+        <Background color="#d4dde7" gap={20} />
+        <Controls showInteractive={false} />
+        <MiniMap pannable zoomable nodeColor="#91caff" style={{ width: 120, height: 80 }} />
       </ReactFlow>
     </div>
   );

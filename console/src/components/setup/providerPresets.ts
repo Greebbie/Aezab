@@ -80,7 +80,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
   {
     id: 'custom',
-    templateKey: 'openai_compatible',
+    templateKey: 'custom',
     needsApiKey: true,
     editableBaseUrl: true,
     fallback: {

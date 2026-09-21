@@ -60,7 +60,7 @@ def _evaluate_condition(condition: dict[str, Any], data: dict[str, Any]) -> bool
 
     try:
         return _OPERATORS[op](actual, expected)
-    except (KeyError, TypeError, ValueError) as e:
+    except (KeyError, TypeError, ValueError, re.error) as e:
         logger.warning("Rule evaluation error: op=%s, field=%s, error=%s", op, field, e)
         return False
 

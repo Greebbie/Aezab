@@ -19,15 +19,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from server.config import settings
 from server.db import get_db
+from server.engine.request_guard import session_lock
 from server.middleware.auth import (
     create_jwt_token,
+    enforce_login_rate_limit,
     generate_api_key,
     get_current_user,
     hash_api_key,
     hash_password,
+    require_console_user,
     require_role,
     security,
     verify_password,
@@ -68,7 +72,7 @@ async def auth_status(db: AsyncSession = Depends(get_db)) -> dict[str, bool]:
     return {"auth_disabled": False, "needs_setup": user_count == 0}
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse, dependencies=[Depends(enforce_login_rate_limit)])
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     """Authenticate with username and password. Returns a JWT token."""
     result = await db.execute(
@@ -82,7 +86,7 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
             detail="Invalid username or password",
         )
 
-    if not verify_password(body.password, user.password_hash):
+    if not await run_in_threadpool(verify_password, body.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
@@ -125,6 +129,19 @@ async def register(
     db: AsyncSession = Depends(get_db),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
+    # The supported deployment is single-process. Serialize bootstrap across
+    # count, password hashing and commit; a second anonymous caller must recheck
+    # authorization after the first administrator has actually been created.
+    async with session_lock("auth:register"):
+        result = await _register_user(body, request, db, credentials)
+        await db.commit()
+        return result
+
+
+async def _register_user(
+    body: RegisterRequest, request: Request, db: AsyncSession,
+    credentials: HTTPAuthorizationCredentials | None,
+) -> UserInfo:
     """Create a new user account.
 
     Rules:
@@ -142,6 +159,7 @@ async def register(
         # Require admin authentication for subsequent registrations
         try:
             current_user = await get_current_user(request, credentials, db)
+            await require_console_user(current_user)
         except HTTPException:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -168,7 +186,7 @@ async def register(
 
     user = User(
         username=body.username,
-        password_hash=hash_password(body.password),
+        password_hash=await run_in_threadpool(hash_password, body.password),
         role=role,
         tenant_id=body.tenant_id,
         display_name=body.display_name or body.username,
@@ -198,7 +216,7 @@ async def register(
     "/register-admin",
     response_model=UserInfo,
     status_code=201,
-    dependencies=[Depends(require_role("admin"))],
+    dependencies=[Depends(require_console_user), Depends(require_role("admin"))],
 )
 async def register_by_admin(
     body: RegisterRequest,
@@ -221,7 +239,7 @@ async def register_by_admin(
 
     user = User(
         username=body.username,
-        password_hash=hash_password(body.password),
+        password_hash=await run_in_threadpool(hash_password, body.password),
         role=body.role,
         tenant_id=body.tenant_id,
         display_name=body.display_name or body.username,
@@ -284,7 +302,7 @@ async def get_me(
 @router.post("/api-keys", response_model=APIKeyCreatedResponse, status_code=201)
 async def create_api_key(
     body: CreateAPIKeyRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    current_user: dict[str, Any] = Depends(require_console_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new API key for the current user.
@@ -322,7 +340,7 @@ async def create_api_key(
 
 @router.get("/api-keys", response_model=list[APIKeyOut])
 async def list_api_keys(
-    current_user: dict[str, Any] = Depends(get_current_user),
+    current_user: dict[str, Any] = Depends(require_console_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List all API keys for the current user (without raw key values)."""
@@ -348,7 +366,7 @@ async def list_api_keys(
 @router.delete("/api-keys/{key_id}", status_code=204)
 async def revoke_api_key(
     key_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    current_user: dict[str, Any] = Depends(require_console_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke (disable) an API key.

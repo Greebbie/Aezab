@@ -13,8 +13,11 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.routing import Match, Mount
 
 from server.api.agent_capabilities import router as agent_capabilities_router
 from server.api.agent_connections import router as agent_connections_router
@@ -25,6 +28,7 @@ from server.api.asr import router as asr_router
 from server.api.audit import router as audit_router
 from server.api.auth import router as auth_router
 from server.api.backup import router as backup_router
+from server.api.business_data import router as business_data_router
 from server.api.files import router as files_router
 from server.api.invoke import router as invoke_router
 from server.api.knowledge import router as knowledge_router
@@ -38,7 +42,9 @@ from server.api.tools import router as tools_router
 from server.api.vector_admin import router as vector_admin_router
 from server.api.workflows import router as workflows_router
 from server.config import settings
-from server.middleware.auth import enforce_rate_limit, require_scope
+from server.middleware.auth import (
+    enforce_rate_limit, get_current_user, require_role, require_scope, security,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +52,17 @@ logger = logging.getLogger(__name__)
 os.makedirs("./data", exist_ok=True)
 
 _project_root = Path(__file__).resolve().parent.parent
-STATIC_DIR = _project_root / "static"
-if not STATIC_DIR.is_dir():
-    # Fallback: serve from console/dist (development / pre-built frontend)
-    STATIC_DIR = _project_root / "console" / "dist"
+
+
+def _console_directory(project_root: Path) -> Path | None:
+    """Use the source build locally and the packaged console in Docker."""
+    for directory in (project_root / "console" / "dist", project_root / "static"):
+        if (directory / "index.html").is_file():
+            return directory
+    return None
+
+
+STATIC_DIR = _console_directory(_project_root)
 
 
 @asynccontextmanager
@@ -91,15 +104,19 @@ async def lifespan(app: FastAPI):
     # without looping when audit_retention_days <= 0 (disabled).
     retention_task = asyncio.create_task(retention_scheduler_loop())
 
-    yield
-
-    backup_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await backup_task
-    retention_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await retention_task
-    await engine.dispose()
+    try:
+        yield
+    finally:
+        backup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await backup_task
+        retention_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await retention_task
+        from server.engine.event_dispatcher import shutdown_event_tasks
+        from server.engine.summary_scheduler import shutdown_summary_tasks
+        await asyncio.gather(shutdown_event_tasks(), shutdown_summary_tasks())
+        await engine.dispose()
 
 
 app = FastAPI(
@@ -158,6 +175,7 @@ app.include_router(agents_router, prefix=prefix + "/agents", tags=["agents"], de
 app.include_router(workflows_router, prefix=prefix + "/workflows", tags=["workflows"], dependencies=_manage_deps)
 app.include_router(knowledge_router, prefix=prefix + "/knowledge", tags=["knowledge"], dependencies=_manage_deps)
 app.include_router(tools_router, prefix=prefix + "/tools", tags=["tools"], dependencies=_manage_deps)
+app.include_router(business_data_router, prefix=prefix + "/data-sources", tags=["business data"], dependencies=_manage_deps)
 app.include_router(audit_router, prefix=prefix + "/audit", tags=["audit"])
 app.include_router(mock_tools_router, prefix=prefix + "/mock-tools", tags=["mock-tools"])
 app.include_router(llm_configs_router, prefix=prefix + "/llm-configs", tags=["llm-configs"], dependencies=_manage_deps)
@@ -177,7 +195,19 @@ app.include_router(subscriptions_router, prefix=prefix + "/subscriptions", tags=
 app.include_router(backup_router, prefix=prefix + "/backups", tags=["backups"])
 
 
-@app.get("/health")
+async def _authorize_health_probe(request: Request, check_llm: bool = False):
+    """Anonymous readiness is free; paid provider probes require an administrator."""
+    if not check_llm:
+        return
+    from server.db import async_session
+
+    async with async_session() as db:
+        user = await get_current_user(request, await security(request), db)
+    await require_scope("manage")(request, current_user=user)
+    await require_role("admin")(current_user=user)
+
+
+@app.get("/health", dependencies=[Depends(_authorize_health_probe)])
 async def health(check_llm: bool = False, force: bool = False):
     """System health check with component status.
 
@@ -262,28 +292,41 @@ async def health(check_llm: bool = False, force: bool = False):
     return status
 
 
-# ── Serve frontend SPA (production) ─────────────────
-# Uses a custom ASGI app mounted at "/" so it is evaluated AFTER all API
-# routes — this avoids the catch-all @app.get("/{path:path}") problem that
-# intercepts /api/* paths (including FastAPI's trailing-slash redirects).
-if STATIC_DIR.is_dir():
-    from starlette.types import Receive, Scope, Send
+# ── Serve the standalone widget and built console ─────────────────
+@app.get("/widget.js", include_in_schema=False)
+async def widget_script():
+    return FileResponse(_project_root / "static" / "widget.js", media_type="text/javascript")
 
-    _index_html = STATIC_DIR / "index.html"
-    _static_files = StaticFiles(directory=str(STATIC_DIR))
 
-    class _SPAStaticFiles:
-        """Serve static files; fall back to index.html for SPA routing."""
+class _SPAStaticFiles(StaticFiles):
+    """Fall back only for console navigation, never failed API or asset requests."""
 
-        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-            if scope["type"] != "http":
-                await _static_files(scope, receive, send)
-                return
-            try:
-                await _static_files(scope, receive, send)
-            except Exception:
-                # File not found → serve index.html (SPA client-side routing)
-                scope["path"] = "/index.html"
-                await _static_files(scope, receive, send)
+    async def get_response(self, path, scope):
+        path = path.replace("\\", "/").lstrip("/")
+        api_path = settings.api_prefix.strip("/")
+        if path == api_path or path.startswith(api_path + "/"):
+            raise StarletteHTTPException(status_code=404)
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or Path(path).suffix or path.startswith("assets/"):
+                raise
+            return await super().get_response("index.html", scope)
 
-    app.mount("/", _SPAStaticFiles())
+
+class _ConsoleMount(Mount):
+    """Leave unmatched API paths to the router, including slash redirects."""
+
+    def matches(self, scope):
+        path = scope.get("path", "")
+        root_path = scope.get("root_path", "").rstrip("/")
+        if root_path and (path == root_path or path.startswith(root_path + "/")):
+            path = path[len(root_path):]
+        api_path = settings.api_prefix.rstrip("/")
+        if path == api_path or path.startswith(api_path + "/"):
+            return Match.NONE, {}
+        return super().matches(scope)
+
+
+if STATIC_DIR is not None:
+    app.router.routes.append(_ConsoleMount("/", app=_SPAStaticFiles(directory=str(STATIC_DIR))))
